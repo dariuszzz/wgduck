@@ -1,0 +1,11 @@
+[package]
+name = "wgduck"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = "0.14.2"
+cgmath = "0.18"
+bytemuck = { version = "1.13.0", features = [ "derive" ] }
+raw-window-handle = "0.5.0"
+ordered-float = "3.4.0"
