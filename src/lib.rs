@@ -7,7 +7,7 @@ pub mod uniform;
 pub mod vertex;
 pub mod texture;
 
-//Reexport wgpu
+//Reexports
 pub use wgpu;
 pub use cgmath;
 pub use bytemuck;

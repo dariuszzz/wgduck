@@ -1,3 +1,7 @@
+use wgpu::VertexFormat;
+
+use crate::vertex::{VertexTrait, VertexType};
+
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct VertexLayoutInfo {
     pub array_stride: wgpu::BufferAddress,
@@ -11,6 +15,46 @@ impl VertexLayoutInfo {
             array_stride: self.array_stride,
             step_mode: self.step_mode,
             attributes: &self.attributes,
+        }
+    }
+
+    pub fn from_vertex<V: VertexTrait>() -> Self {
+        let attributes = V::vertex_layout()
+                .into_iter()
+                .map(|vtype| match vtype {
+                    VertexType::Float32 => VertexFormat::Float32,
+                    VertexType::Float32x2 => VertexFormat::Float32x2,
+                    VertexType::Float32x3 => VertexFormat::Float32x3,
+                    VertexType::Float32x4 => VertexFormat::Float32x4,
+                    VertexType::Uint32 => VertexFormat::Uint32,
+                    VertexType::Uint32x2 => VertexFormat::Uint32x2,
+                    VertexType::Uint32x3 => VertexFormat::Uint32x3,
+                    VertexType::Uint32x4 => VertexFormat::Uint32x4,
+                    VertexType::Sint32 => VertexFormat::Sint32,
+                    VertexType::Sint32x2 => VertexFormat::Sint32x2,
+                    VertexType::Sint32x3 => VertexFormat::Sint32x3,
+                    VertexType::Sint32x4 => VertexFormat::Sint32x4,
+                })
+                .scan(0, |offset, vformat| {
+                    *offset += vformat.size();
+                    Some((*offset, vformat))
+                })
+                .enumerate()
+                .map(|(index, (offset, vformat))| {
+                    wgpu::VertexAttribute {
+                        // Need to subtract the current format size in order to for the offsets
+                        // to start at zero
+                        offset: offset - vformat.size(),
+                        shader_location: index as u32,
+                        format: vformat,
+                    }
+                })
+                .collect::<Vec<_>>();
+
+        Self {
+            array_stride: std::mem::size_of::<V>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes,
         }
     }
 }

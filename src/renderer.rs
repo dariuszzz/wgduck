@@ -538,8 +538,25 @@ impl RenderingContext {
             });
 
         self.render_pipelines.insert(pipeline_info.clone(), pipeline);
-        crate::debug!("Created new pipeline");
+        crate::debug!("Created new pipeline");  
+    }
 
+    pub fn load_shader(
+        &mut self,
+        vertex_shader: &str,
+        vertex_entry: &str,
+        fragment_shader: &str,
+        fragment_entry: &str,
+    ) -> Shader {
+        self.create_shader_module_if_doesnt_exist(vertex_shader);
+        self.create_shader_module_if_doesnt_exist(fragment_shader);
+
+         Shader::new(
+            vertex_shader,
+            vertex_entry.to_owned(),
+            fragment_shader,
+            fragment_entry.to_owned(),
+        )
     }
 }
 
