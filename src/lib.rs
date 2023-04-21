@@ -9,6 +9,8 @@ pub mod texture;
 
 //Reexport wgpu
 pub use wgpu;
+pub use cgmath;
+pub use bytemuck;
 
 #[allow(unused_macros)]
 macro_rules! debug {
