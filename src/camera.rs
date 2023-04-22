@@ -1,9 +1,9 @@
 use std::f32::consts::PI;
 
-use cgmath::{Deg, Rad};
+use nalgebra_glm as glm;
 
 #[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: cgmath::Matrix4<f32> = cgmath::Matrix4::new(
+pub const OPENGL_TO_WGPU_MATRIX: glm::Mat4 = glm::Mat4::new(
     1.0, 0.0, 0.0, 0.0,
     0.0, 1.0, 0.0, 0.0,
     0.0, 0.0, 0.5, 0.0,
@@ -18,17 +18,16 @@ pub struct CameraUniform {
 
 impl Default for CameraUniform {
     fn default() -> Self {
-        use cgmath::SquareMatrix;
         Self {
-            view_proj: cgmath::Matrix4::identity().into(),
+            view_proj: glm::Mat4::identity().into(),
         }
     }
 }
 
 pub struct OrthoCamera {
-    pub pos: cgmath::Point3<f32>,
-    pub target: cgmath::Point3<f32>,
-    pub up: cgmath::Vector3<f32>,
+    pub pos: glm::Vec3,
+    pub target: glm::Vec3,
+    pub up: glm::Vec3,
     pub znear: f32,
     pub zfar: f32,
     pub zoom: f32,
@@ -41,8 +40,8 @@ impl OrthoCamera {
         self.uniform.view_proj = self.build_view_proj_matrix(new_window_size).into();
     }
 
-    pub fn build_view_proj_matrix(&self, new_window_size: (u32, u32)) -> cgmath::Matrix4<f32> {
-        let view = cgmath::Matrix4::look_at_rh(self.pos, self.target, self.up);
+    pub fn build_view_proj_matrix(&self, new_window_size: (u32, u32)) -> glm::Mat4 {
+        let view = glm::look_at_rh(&self.pos, &self.target, &self.up);
 
         let width = new_window_size.0 as f32;
         let height = new_window_size.1 as f32;
@@ -51,16 +50,16 @@ impl OrthoCamera {
         let scale_y = height / self.zoom;
 
 
-        let proj = cgmath::ortho(-scale_x, scale_x, -scale_y, scale_y, -self.zfar, self.zfar);
-        // let proj = cgmath::ortho(0.0, width/self.zoom, 0.0, height/self.zoom, self.znear, self.zfar);
+        let proj = glm::ortho(-scale_x, scale_x, -scale_y, scale_y, -self.zfar, self.zfar);
+        // let proj = glm::ortho(0.0, width/self.zoom, 0.0, height/self.zoom, self.znear, self.zfar);
 
         OPENGL_TO_WGPU_MATRIX * proj * view
     }
 
     pub fn new(
-        pos: cgmath::Point3<f32>,
-        target: cgmath::Point3<f32>,
-        up: cgmath::Vector3<f32>,
+        pos: glm::Vec3,
+        target: glm::Vec3,
+        up: glm::Vec3,
         znear: f32,
         zfar: f32,
         zoom: f32,
@@ -80,9 +79,9 @@ impl OrthoCamera {
 }
 
 pub struct PerspectiveCamera {
-    pub pos: cgmath::Point3<f32>,
-    pub target: cgmath::Point3<f32>,
-    pub up: cgmath::Vector3<f32>,
+    pub pos: glm::Vec3,
+    pub target: glm::Vec3,
+    pub up: glm::Vec3,
     pub near: f32,
     pub far: f32,
     pub fov: f32,
@@ -95,8 +94,8 @@ impl PerspectiveCamera {
         self.uniform.view_proj = self.build_view_proj_matrix(new_window_size).into();
     }
 
-    pub fn build_view_proj_matrix(&self, new_window_size: (u32, u32)) -> cgmath::Matrix4<f32> {
-        let view = cgmath::Matrix4::look_at_rh(self.pos, self.target, self.up);
+    pub fn build_view_proj_matrix(&self, new_window_size: (u32, u32)) -> glm::Mat4 {
+        let view = glm::look_at_rh(&self.pos, &self.target, &self.up);
 
         let width = new_window_size.0 as f32;
         let height = new_window_size.1 as f32;
@@ -105,15 +104,15 @@ impl PerspectiveCamera {
         
         let diag = ((height*height)+(width*width)).sqrt();
         let fov = 2.0 * ((diag) / (2.0 * self.far)).atan();
-        let proj = cgmath::perspective(Rad(fov), aspect_ratio, self.near, self.far);
+        let proj = glm::perspective(aspect_ratio, fov, self.near, self.far);
 
         OPENGL_TO_WGPU_MATRIX * proj * view
     }
 
     pub fn new(
-        pos: cgmath::Point3<f32>,
-        target: cgmath::Point3<f32>,
-        up: cgmath::Vector3<f32>,
+        pos: glm::Vec3,
+        target: glm::Vec3,
+        up: glm::Vec3,
         near: f32,
         far: f32,
         fov: f32

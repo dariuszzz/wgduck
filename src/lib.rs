@@ -9,7 +9,7 @@ pub mod texture;
 
 //Reexports
 pub use wgpu;
-pub use cgmath;
+pub use nalgebra_glm as glm;
 pub use bytemuck;
 
 #[allow(unused_macros)]

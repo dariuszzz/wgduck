@@ -7,10 +7,11 @@ use wgpu::{
     TextureFormat, 
 };
 
-use crate::mesh::{VertexLayoutInfo, Mesh};
+use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
 use crate::shader::{Shader, ShaderModule};
 use crate::texture::Texture;
 use crate::uniform::UniformBindGroup;
+use crate::vertex::VertexTrait;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Color {
@@ -200,7 +201,7 @@ impl RenderingContext {
 
     pub fn render_batches(
         &mut self,
-        batches: Vec<(BatchInfo, Mesh)>,
+        batches: Vec<(BatchInfo, PackedMesh)>,
         distinct_uniforms: Vec<(Vec<u8>, wgpu::ShaderStages)>
     ) -> Result<(), wgpu::SurfaceError>{
 
@@ -575,6 +576,7 @@ pub struct BatchInfo {
     pub textures: Vec<usize>,
     pub distinct_uniform_ids: Vec<usize>,
     pub transparent: bool,
+    //I forgot what this was for /shrug
     pub highest_z: NotNan<f32>,
 }
 
@@ -608,7 +610,7 @@ impl Hash for BatchInfo {
 
 impl BatchInfo {
     pub fn new(
-        mesh: &Mesh,
+        mesh: &PackedMesh,
         shader: Shader,
         textures: Vec<usize>,
         distinct_uniform_ids: Vec<usize>
