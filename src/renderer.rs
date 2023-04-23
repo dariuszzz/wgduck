@@ -559,6 +559,30 @@ impl RenderingContext {
             fragment_entry.to_owned(),
         )
     }
+
+    pub fn create_texture(&mut self, data: &[u8], dimensions: (u32, u32)) -> usize {
+        let texture = Texture::new(
+            &self.device,
+            &self.queue,
+            data,
+            dimensions
+        );
+
+        self.textures.push(texture);
+        let index = self.textures.len() - 1;
+
+        index
+    }
+
+    pub fn update_texture(
+        &mut self, 
+        texture_handle: usize, 
+        data: &[u8], 
+    ) {
+        if let Some(texture) = self.textures.get_mut(texture_handle) { 
+            texture.update(&self.queue, data);
+        }
+    }
 }
 
 #[derive(Hash, Eq, PartialEq, Clone)]
