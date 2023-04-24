@@ -105,9 +105,7 @@ impl PerspectiveCamera {
     
         let aspect_ratio = width / height;
         
-        let diag = ((height*height)+(width*width)).sqrt();
-        let fov = 2.0 * ((diag) / (2.0 * self.far)).atan();
-        glm::perspective(aspect_ratio, fov, self.near, self.far)
+        glm::perspective(aspect_ratio, self.fov, self.near, self.far)
     }
 
     pub fn build_view_proj_matrix(&self, window_size: &glm::UVec2) -> glm::Mat4 {
