@@ -202,7 +202,8 @@ impl RenderingContext {
     pub fn render_batches(
         &mut self,
         batches: Vec<(BatchInfo, PackedMesh)>,
-        distinct_uniforms: Vec<(Vec<u8>, wgpu::ShaderStages)>
+        distinct_uniforms: Vec<(Vec<u8>, wgpu::ShaderStages)>,
+        texture: Option<usize>
     ) -> Result<(), wgpu::SurfaceError>{
 
         let assigned_binding_ids = self.find_or_create_uniform_bindings(&distinct_uniforms);
@@ -310,20 +311,24 @@ impl RenderingContext {
         );
 
 
-        let output = self.surface.get_current_texture()?;
-        let output_tex = output.texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-
         let mut encoder = self.device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("rendering encoder"),
             });
 
+        let output = self.surface.get_current_texture()?;
+        let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        
+        let output_tex = match texture {
+            Some(id) => &self.textures.get(id).expect("Texture does not exist").texture_view,
+            None => &output_view,
+        };
+
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &output_tex,
+                view: output_tex,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Load,
@@ -339,8 +344,7 @@ impl RenderingContext {
                 stencil_ops: None,
             }),
         });
-
-
+        
         for draw_call in draw_calls.into_iter() {
 
             let (v_start, v_end) = draw_call.vertex_offsets;
@@ -376,8 +380,12 @@ impl RenderingContext {
         drop(render_pass);
 
         self.queue.submit(std::iter::once(encoder.finish()));
+        
+        match texture {
+            Some(id) => {}
+            None => output.present(),
+        };
 
-        output.present();
 
         Ok(())
     }
