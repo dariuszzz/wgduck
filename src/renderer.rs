@@ -382,7 +382,7 @@ impl RenderingContext {
         self.queue.submit(std::iter::once(encoder.finish()));
         
         match texture {
-            Some(id) => {}
+            Some(_) => {}
             None => output.present(),
         };
 
@@ -593,12 +593,31 @@ impl RenderingContext {
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Clone)]
+#[derive(Eq, Clone)]
 pub struct RenderPipelineInfo {
     vertex_layout: VertexLayoutInfo,
     shader: Shader,
     textures: Vec<usize>,
     uniform_binding_ids: Vec<usize>,
+}
+
+impl PartialEq for RenderPipelineInfo {
+    fn eq(&self, other: &Self) -> bool {
+        self.vertex_layout == other.vertex_layout
+        && self.shader == other.shader
+        && self.textures.len() == other.textures.len()
+        && self.uniform_binding_ids == other.uniform_binding_ids
+    }
+}
+
+impl Hash for RenderPipelineInfo {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.vertex_layout.hash(state);
+        self.shader.hash(state);
+        self.textures.len().hash(state);
+        self.shader.hash(state);
+        self.uniform_binding_ids.hash(state);
+    }
 }
 
 #[derive(Eq, Clone)]
@@ -616,7 +635,7 @@ impl PartialEq for BatchInfo {
     fn eq(&self, other: &Self) -> bool {
         self.layout == other.layout
         && self.shader == other.shader
-        && self.textures == other.textures
+        && self.textures.len() == other.textures.len()
         && self.distinct_uniform_ids == other.distinct_uniform_ids
         && self.transparent == other.transparent
         //If the mesh is transparent then also compare highest_z otherwise ignore it
@@ -628,7 +647,7 @@ impl Hash for BatchInfo {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.layout.hash(state);
         self.shader.hash(state);
-        self.textures.hash(state);
+        self.textures.len().hash(state);
         self.distinct_uniform_ids.hash(state);
         self.transparent.hash(state);
         //Only take the z value into account when the mesh is transparent
