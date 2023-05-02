@@ -10,7 +10,7 @@ use wgpu::{
 use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
 use crate::shader::{Shader, ShaderModule};
 use crate::texture::Texture;
-use crate::uniform::UniformBindGroup;
+use crate::uniform::{UniformBindGroup, Uniform, DynamicInfo};
 use crate::vertex::VertexTrait;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
@@ -172,6 +172,7 @@ impl RenderingContext {
             (config.width, config.height)
         );
 
+
         Self {
             queue,
             device,
@@ -202,18 +203,18 @@ impl RenderingContext {
     pub fn render_batches(
         &mut self,
         batches: Vec<(BatchInfo, PackedMesh)>,
-        distinct_uniforms: Vec<(Vec<u8>, wgpu::ShaderStages)>,
-        texture: Option<usize>
+        distinct_uniforms: Vec<Uniform>,
+        texture: Option<usize>,
+        clear: Option<wgpu::Color>
     ) -> Result<(), wgpu::SurfaceError>{
 
         let assigned_binding_ids = self.find_or_create_uniform_bindings(&distinct_uniforms);
 
         //Update uniforms
-        for (idx, binding_id) in assigned_binding_ids.iter().enumerate() {
+        for (original_idx, binding_id) in assigned_binding_ids.iter() {
             let binding = self.uniform_bindings.get(*binding_id).unwrap();
-            binding.update(&self.queue, &distinct_uniforms[idx].0);
+            binding.update(&self.queue, &distinct_uniforms[*original_idx].data);
         }
-
 
         struct DrawCallData {
             pipeline_info: RenderPipelineInfo,
@@ -276,7 +277,15 @@ impl RenderingContext {
             )| {
                 let pipeline_binding_ids = batch_info.distinct_uniform_ids
                     .iter()
-                    .map(|id| assigned_binding_ids[*id])
+                    // Since distinct uniforms id contains ids into the user given vector,
+                    // we have to map them to the bindings assigned by find_or_create_uniform_bindings
+                    .map(|id| assigned_binding_ids
+                            .iter()
+                            .find(|(original_idx, _)| original_idx == id)
+                            .unwrap()
+                            //The value is (original_idx, assigned_idx) thus .1 gets the assigned index
+                            .1
+                    )
                     .collect::<Vec<_>>();
                 
                 let pipeline_info = RenderPipelineInfo {
@@ -331,19 +340,26 @@ impl RenderingContext {
                 view: output_tex,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
+                    load: match clear {
+                        Some(color) => wgpu::LoadOp::Clear(color),
+                        _ => wgpu::LoadOp::Load,
+                    },
                     store: true,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.depth_texture_view,
                 depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
+                    load: match clear {
+                        Some(color) => wgpu::LoadOp::Clear(1.0),
+                        _ => wgpu::LoadOp::Load,
+                    },
                     store: true,
                 }),
                 stencil_ops: None,
             }),
         });
+
         
         for draw_call in draw_calls.into_iter() {
 
@@ -352,7 +368,7 @@ impl RenderingContext {
 
             if v_start == v_end || i_start == i_end { continue } 
             
-
+            
             let pipeline = self.render_pipelines.get(&draw_call.pipeline_info).unwrap();
     
             render_pass.set_pipeline(pipeline);
@@ -392,38 +408,53 @@ impl RenderingContext {
 
     pub fn find_or_create_uniform_bindings(
         &mut self,
-        uniforms: &[(Vec<u8>, wgpu::ShaderStages)],
-    ) -> Vec<usize> {
-        let mut chosen_bindings = Vec::new();
+        uniforms: &[Uniform],
+    ) -> Vec<(usize, usize)> {
+        let mut chosen_bindings: Vec<(usize, usize)> = Vec::new();
 
         let mut uniform_sizes = uniforms
             .iter()
             .cloned()
-            .map(|(data, stages)| ((std::mem::size_of::<u8>() * data.len()) as u64, stages))
+            .enumerate()
+            .map(|(original_idx, Uniform { data, dynamic, .. })| (original_idx, (std::mem::size_of::<u8>() * data.len()) as u64, dynamic))
             .collect::<Vec<_>>();
-
         //Sort from highest to lowest size in order to take up bindings with big buffers first
+
         //this is so low size uniforms dont take the biggest buffers which would force creation
         //of unneccessary big buffers
-        uniform_sizes.sort_by(|(a, _), (b, _)| b.cmp(a));
+        uniform_sizes.sort_by(|(_, a, _), (_, b, _)| b.cmp(a));
 
-        'outer: for (uniform_idx, (uniform_size, stages)) in uniform_sizes.into_iter().enumerate() {
+        'outer: for (uniform_idx, (original_idx, uniform_size, dynamic)) in uniform_sizes.into_iter().enumerate() {
             for binding_idx in 0..self.uniform_bindings.len() {
                 //If the binding's buffer can accommodate the given uniform
                 //and it hasnt been chosen already
                 let binding = self.uniform_bindings.get(binding_idx).unwrap();
 
-                if binding.min_size >= uniform_size && !chosen_bindings.contains(&binding_idx) {
-                    chosen_bindings.push(binding_idx);
-                    continue 'outer;
+                //if the uniform is dynamic
+                if let Some(DynamicInfo { min_size, max_size }) = dynamic {
+                    // only pick dynamic buffers
+                    if binding.min_size <= min_size && binding.max_size >= max_size && !chosen_bindings.contains(&(original_idx, binding_idx)) {
+                        chosen_bindings.push((original_idx, binding_idx));
+                        continue 'outer;
+                    }
+                } else {
+                    // if the uniform is not dynamic then dont pick dynamic buffers
+                    if binding.min_size <= uniform_size && binding.max_size >= uniform_size && !chosen_bindings.contains(&(original_idx, binding_idx)) {
+                        chosen_bindings.push((original_idx, binding_idx));
+                        continue 'outer;
+                    }
                 }
             }
 
             //If there was no appropriate binding available then create a new one
-            let new_binding = UniformBindGroup::new(&self.device, stages, &uniforms[uniform_idx].0);
+            let new_binding = UniformBindGroup::new(
+                &self.device, 
+                &self.queue,
+                &uniforms[uniform_idx]
+            );
             self.uniform_bindings.push(new_binding);
             //and add it to the chosen list
-            chosen_bindings.push(self.uniform_bindings.len() - 1);
+            chosen_bindings.push((original_idx, self.uniform_bindings.len() - 1));
             crate::debug!("Created new binding");
         }
 
