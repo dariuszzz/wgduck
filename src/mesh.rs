@@ -1,8 +1,11 @@
+use std::marker::PhantomData;
+
 use glm::Vec3;
+use itertools::Itertools;
 use wgpu::VertexFormat;
 
 
-use crate::vertex::{VertexTrait, VertexType, Vertex, BasicVertexData};
+use crate::vertex::{Vertex};
 
 use nalgebra_glm as glm;
 
@@ -11,6 +14,7 @@ pub struct VertexLayoutInfo {
     pub array_stride: wgpu::BufferAddress,
     pub step_mode: wgpu::VertexStepMode,
     pub attributes: Vec<wgpu::VertexAttribute>,
+    pub total_size: wgpu::BufferAddress,
 }
 
 impl VertexLayoutInfo {
@@ -22,24 +26,12 @@ impl VertexLayoutInfo {
         }
     }
 
-    pub fn from_vertex<V: VertexTrait>() -> Self {
-        let attributes = Vertex::<V>::full_layout()
+    pub fn from_vertex<V: Vertex>() -> Self {
+        let mut total_size = 0 as wgpu::BufferAddress;
+        let attributes = V::fields()
                 .into_iter()
-                .map(|vtype| match vtype {
-                    VertexType::Float32 => VertexFormat::Float32,
-                    VertexType::Float32x2 => VertexFormat::Float32x2,
-                    VertexType::Float32x3 => VertexFormat::Float32x3,
-                    VertexType::Float32x4 => VertexFormat::Float32x4,
-                    VertexType::Uint32 => VertexFormat::Uint32,
-                    VertexType::Uint32x2 => VertexFormat::Uint32x2,
-                    VertexType::Uint32x3 => VertexFormat::Uint32x3,
-                    VertexType::Uint32x4 => VertexFormat::Uint32x4,
-                    VertexType::Sint32 => VertexFormat::Sint32,
-                    VertexType::Sint32x2 => VertexFormat::Sint32x2,
-                    VertexType::Sint32x3 => VertexFormat::Sint32x3,
-                    VertexType::Sint32x4 => VertexFormat::Sint32x4,
-                })
                 .scan(0, |offset, vformat| {
+                    total_size += vformat.size();
                     *offset += vformat.size();
                     Some((*offset, vformat))
                 })
@@ -56,24 +48,25 @@ impl VertexLayoutInfo {
                 .collect::<Vec<_>>();
 
         Self {
-            array_stride: std::mem::size_of::<Vertex<V>>() as wgpu::BufferAddress,
+            array_stride: total_size,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes,
+            total_size,
         }
     }
 }
 
 #[derive(Clone)]
-pub struct Mesh<V: VertexTrait> {
-    pub vertices: Vec<Vertex<V>>,
+pub struct Mesh<V> {
+    pub vertices: Vec<V>,
     pub indices: Vec<u16>,
     pub layout: VertexLayoutInfo,
     pub could_be_transparent: bool,
-    pub highest_z: f32,
 }
 
-impl<V: VertexTrait> Mesh<V> {
+impl<V: Vertex> Mesh<V> {
     pub fn merge(&mut self, other: &mut Mesh<V>) {
+
         other.indices.iter_mut().for_each(|i| {
             *i += self.vertices.len() as u16;
         });
@@ -92,93 +85,58 @@ impl<V: VertexTrait> Mesh<V> {
         self.indices.append(&mut other.indices);
         self.vertices.append(&mut other.vertices);
 
-        if other.highest_z > self.highest_z { 
-            self.highest_z = other.highest_z;
-        }
 
         if other.could_be_transparent {
             self.could_be_transparent = true;
         }
     }
 
-    pub fn into_packed(&self) -> PackedMesh {
-        PackedMesh { 
-            // this might be slow :(
-            vertices: self.vertices.iter().map(|v| v.pack()).flatten().collect(), 
-            indices: self.indices.clone(),
-            layout: self.layout.clone(),
-            could_be_transparent: self.could_be_transparent,
-            highest_z: self.highest_z
-        }
-    }
-
-    pub fn new(vertices: Vec<Vertex<V>>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
-        let highest_z = vertices.iter().map(|v| v.base.pos[2]).max_by(|a, b| a.total_cmp(&b)).unwrap_or_default();
-
+    pub fn new(vertices: Vec<V>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
+        
         Self {
-            vertices,
+            vertices: bytemuck::cast_slice(&vertices).to_vec(),
             indices,
             layout: VertexLayoutInfo::from_vertex::<V>(),
             could_be_transparent,
-            highest_z,
         }
     }
 
     pub fn apply_rotation(&self, rotation: glm::Quat) -> Self {
-        let vertices: Vec<Vertex<V>> = self.vertices.clone().into_iter().map(|v| {
-            let pos = glm::Vec3::new(v.base.pos[0], v.base.pos[1], v.base.pos[2]);
-            let rotated = glm::quat_rotate_vec3(&rotation, &pos);
-
-            Vertex {
-                base: BasicVertexData {
-                    pos: rotated.into(),
-                    .. v.base
-                },
-                ..v
-            }
-        }).collect();
-
-        let highest_z = vertices.iter().map(|v| v.base.pos[2]).max_by(|a, b| a.total_cmp(&b)).unwrap_or_default();
-
+        let mut vertices = self.vertices.clone();
+        for vert in &mut vertices {
+            let pos = vert.position();
+            let rotated_pos = glm::quat_rotate_vec3(&rotation, &pos);
+            vert.set_position(rotated_pos);
+        }
+        
         Self {
             vertices,
-            indices: self.indices.clone(),
-            layout: self.layout.clone(),
-            could_be_transparent: self.could_be_transparent,
-            highest_z
+            ..self.clone()
         }
     }
 
     pub fn apply_translation(&self, translation: glm::Vec3) -> Self {
-        let vertices: Vec<Vertex<V>> = self.vertices.clone().into_iter().map(|v| {
-            let pos = glm::Vec3::new(v.base.pos[0], v.base.pos[1], v.base.pos[2]);
-            let translated = pos + translation;
-
-            Vertex {
-                base: BasicVertexData {
-                    pos: translated.into(),
-                    .. v.base
-                },
-                ..v
-            }
-        }).collect();
-
-        let highest_z = vertices.iter().map(|v| v.base.pos[2]).max_by(|a, b| a.total_cmp(&b)).unwrap_or_default();
+        let mut vertices = self.vertices.clone(); 
+        for vert in &mut vertices {
+            let pos = vert.position();
+            let rotated_pos = pos + translation;
+            vert.set_position(rotated_pos);
+        }
 
         Self {
             vertices,
+            ..self.clone()
+        }
+    }
+
+    pub fn pack(&self) -> PackedMesh {
+        PackedMesh {
+            vertices: bytemuck::cast_slice(&self.vertices).to_vec(),
             indices: self.indices.clone(),
-            layout: self.layout.clone(),
             could_be_transparent: self.could_be_transparent,
-            highest_z
+            layout: self.layout.clone(),
         }
     }
 }
 
-pub struct PackedMesh {
-    pub vertices: Vec<u8>,
-    pub indices: Vec<u16>,
-    pub layout: VertexLayoutInfo,
-    pub could_be_transparent: bool,
-    pub highest_z: f32,
-}
+pub type PackedMesh = Mesh<u8>;

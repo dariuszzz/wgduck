@@ -11,7 +11,7 @@ use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
 use crate::shader::{Shader, ShaderModule};
 use crate::texture::Texture;
 use crate::uniform::{UniformBindGroup, Uniform, DynamicInfo};
-use crate::vertex::VertexTrait;
+use crate::vertex::Vertex;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Color {
@@ -658,8 +658,6 @@ pub struct BatchInfo {
     pub textures: Vec<usize>,
     pub distinct_uniform_ids: Vec<usize>,
     pub transparent: bool,
-    //I forgot what this was for /shrug
-    pub highest_z: NotNan<f32>,
 }
 
 impl PartialEq for BatchInfo {
@@ -669,8 +667,6 @@ impl PartialEq for BatchInfo {
         && self.textures.len() == other.textures.len()
         && self.distinct_uniform_ids == other.distinct_uniform_ids
         && self.transparent == other.transparent
-        //If the mesh is transparent then also compare highest_z otherwise ignore it
-        && ((self.transparent && self.highest_z == other.highest_z) || !self.transparent)
     }
 }
 
@@ -681,12 +677,6 @@ impl Hash for BatchInfo {
         self.textures.len().hash(state);
         self.distinct_uniform_ids.hash(state);
         self.transparent.hash(state);
-        //Only take the z value into account when the mesh is transparent
-        //This is so opaque render commands get batched together despite differing
-        //z values
-        if self.transparent {
-            self.highest_z.hash(state);
-        }
     }
 }
 
@@ -703,7 +693,6 @@ impl BatchInfo {
             textures,
             distinct_uniform_ids,
             transparent: mesh.could_be_transparent,
-            highest_z: NotNan::new(mesh.highest_z).unwrap(),
         }
     }
 }
