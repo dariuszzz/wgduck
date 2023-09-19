@@ -129,7 +129,7 @@ impl<V: Vertex> Mesh<V> {
     pub fn new(vertices: Vec<V>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
         
         Self {
-            vertices: bytemuck::cast_slice(&vertices).to_vec(),
+            vertices,
             indices,
             layout: VertexLayoutInfo::from_vertex::<V>(),
             could_be_transparent,
