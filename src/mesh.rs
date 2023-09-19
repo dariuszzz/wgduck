@@ -121,6 +121,10 @@ impl<V: Vertex> Mesh<V> {
             self.could_be_transparent = true;
         }
     }
+}
+
+impl<V: Vertex> Mesh<V> {
+
 
     pub fn new(vertices: Vec<V>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
         
