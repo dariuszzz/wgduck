@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use ordered_float::NotNan;
 use wgpu::{
     Device, Queue, Surface, SurfaceConfiguration,
-    TextureFormat, 
+    TextureFormat, InstanceDescriptor, 
 };
 
 use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
@@ -91,6 +91,7 @@ impl RenderingContext {
             dimension: wgpu::TextureDimension::D2,
             format: Self::DEPTH_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[Self::DEPTH_FORMAT]
         });
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -104,9 +105,13 @@ impl RenderingContext {
     {
         let window_size = window_size.into();
 
-        let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            dx12_shader_compiler: wgpu::Dx12Compiler::Fxc
+        });
 
-        let surface = unsafe { instance.create_surface(window) };
+
+        let surface = unsafe { instance.create_surface(window) }.unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
@@ -129,12 +134,11 @@ impl RenderingContext {
             .expect("Couldn't create indigo device");
 
         let swapchain_format = surface
-            .get_supported_formats(&adapter)
+            .get_capabilities(&adapter)
+            .formats
             .into_iter()
             .find(|format| {
-                let desc = format.describe();
-
-                desc.srgb
+                format.is_srgb()
             })
             .expect("Couldn't find appropriate surface");
 
@@ -145,6 +149,7 @@ impl RenderingContext {
             width: window_size[0],
             height: window_size[1],
             present_mode: wgpu::PresentMode::AutoVsync,
+            view_formats: vec![swapchain_format]
         };
 
         surface.configure(&device, &config);

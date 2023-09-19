@@ -45,7 +45,8 @@ impl Texture {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb]
             }
         );
 
@@ -63,8 +64,8 @@ impl Texture {
             texture_data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * dimensions.0),
-                rows_per_image: std::num::NonZeroU32::new(dimensions.1),
+                bytes_per_row: Some(4 * dimensions.0),
+                rows_per_image: Some(dimensions.1),
             },
             wgpu::Extent3d {
                 width: dimensions.0,
@@ -130,8 +131,8 @@ impl Texture {
             data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: std::num::NonZeroU32::new(4 * self.dimensions.0),
-                rows_per_image: std::num::NonZeroU32::new(self.dimensions.1),
+                bytes_per_row: Some(4 * self.dimensions.0),
+                rows_per_image: Some(self.dimensions.1),
             },
             wgpu::Extent3d {
                 width: self.dimensions.0,
