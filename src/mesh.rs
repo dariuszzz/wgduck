@@ -96,6 +96,7 @@ impl Mesh<u8> {
 
 impl<V: Vertex> Mesh<V> {
     pub fn merge(&mut self, other: &mut Mesh<V>) {
+        assert!(self.layout == other.layout);
 
         other.indices.iter_mut().for_each(|i| {
             *i += self.vertices.len() as u16;
