@@ -63,8 +63,39 @@ pub struct Mesh<V> {
     pub could_be_transparent: bool,
 }
 
+
+impl Mesh<u8> {
+    pub fn merge(&mut self, other: &mut Mesh<u8>) {
+        assert!(self.layout == other.layout);
+
+        other.indices.iter_mut().for_each(|i| {
+            *i += self.vertices.len() as u16 / self.layout.total_size as u16;
+        });
+
+        // deconstructed triangle between meshes
+        if let Some(last_index_from_other) = other.indices.last().cloned() {
+            if let Some(last_self_index) = self.indices.last().cloned() {
+                self.indices.append(&mut vec![
+                    last_self_index,
+                    last_self_index,
+                    last_index_from_other,
+                ]);
+            }
+        }
+
+        self.indices.append(&mut other.indices);
+        self.vertices.append(&mut other.vertices);
+
+
+        if other.could_be_transparent {
+            self.could_be_transparent = true;
+        }
+    }
+}
+
 impl<V: Vertex> Mesh<V> {
     pub fn merge(&mut self, other: &mut Mesh<V>) {
+        assert!(self.layout == other.layout);
 
         other.indices.iter_mut().for_each(|i| {
             *i += self.vertices.len() as u16;
@@ -89,11 +120,15 @@ impl<V: Vertex> Mesh<V> {
             self.could_be_transparent = true;
         }
     }
+}
+
+impl<V: Vertex> Mesh<V> {
+
 
     pub fn new(vertices: Vec<V>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
         
         Self {
-            vertices: bytemuck::cast_slice(&vertices).to_vec(),
+            vertices,
             indices,
             layout: VertexLayoutInfo::from_vertex::<V>(),
             could_be_transparent,

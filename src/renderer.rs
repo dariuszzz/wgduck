@@ -5,7 +5,7 @@ use std::io::empty;
 use ordered_float::NotNan;
 use wgpu::{
     Device, Queue, Surface, SurfaceConfiguration,
-    TextureFormat, 
+    TextureFormat, InstanceDescriptor, 
 };
 
 use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
