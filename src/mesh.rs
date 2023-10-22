@@ -1,7 +1,6 @@
 use std::marker::PhantomData;
 
 use glm::Vec3;
-use itertools::Itertools;
 use wgpu::VertexFormat;
 
 

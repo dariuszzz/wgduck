@@ -35,23 +35,31 @@ pub struct OrthoCamera {
 }
 
 impl OrthoCamera {
-    pub fn update(&mut self, new_window_size: (u32, u32)) {
+    pub fn update(&mut self, new_window_size: &glm::UVec2) {
         self.uniform.view_proj = self.build_view_proj_matrix(new_window_size).into();
     }
 
-    pub fn build_view_proj_matrix(&self, new_window_size: (u32, u32)) -> glm::Mat4 {
-        let view = glm::look_at_rh(&self.pos, &self.target, &self.up);
+    pub fn build_view_matrix(&self) -> glm::Mat4 {
+        glm::look_at_rh(&self.pos, &self.target, &self.up)
+    }
 
-        let width = new_window_size.0 as f32;
-        let height = new_window_size.1 as f32;
+    pub fn build_proj_matrix(&self, new_window_size: &glm::UVec2) -> glm::Mat4 {
+
+        let width = new_window_size.x as f32;
+        let height = new_window_size.y as f32;
 
         let scale_x = width / self.zoom;
         let scale_y = height / self.zoom;
 
-
         let proj = glm::ortho(-scale_x, scale_x, -scale_y, scale_y, -self.zfar, self.zfar);
-        // let proj = glm::ortho(0.0, width/self.zoom, 0.0, height/self.zoom, self.znear, self.zfar);
 
+        proj
+    }
+
+    pub fn build_view_proj_matrix(&self, window_size: &glm::UVec2) -> glm::Mat4 {
+        let view = self.build_view_matrix();
+        let proj = self.build_proj_matrix(window_size);
+        
         OPENGL_TO_WGPU_MATRIX * proj * view
     }
 

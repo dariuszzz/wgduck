@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::io::empty;
 
 use ordered_float::NotNan;
 use wgpu::{
@@ -10,8 +11,12 @@ use wgpu::{
 use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
 use crate::shader::{Shader, ShaderModule};
 use crate::texture::Texture;
-use crate::uniform::{UniformBindGroup, Uniform, DynamicInfo};
+use crate::uniform::{UniformBindGroup, Uniform, DynamicInfo, self};
 use crate::vertex::Vertex;
+
+pub static FULLSCREEN_SHADER: &str = include_str!("fullscreen.wgsl");
+
+pub type TextureHandle = usize;
 
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Color {
@@ -59,44 +64,41 @@ pub struct RenderingContext {
     pub vertex_buffer: wgpu::Buffer,
     pub index_buffer: wgpu::Buffer,
 
-    pub depth_texture: wgpu::Texture,
-    pub depth_texture_view: wgpu::TextureView,
-
     //Shader memory location as key since when including a file via static theres no reason to
     //do it multiple times also avoids an expensive hash of the entire file
     pub shader_modules: HashMap<*const str, wgpu::ShaderModule>,
     pub uniform_bindings: Vec<UniformBindGroup>,
-    pub textures: Vec<Texture>,
+    pub textures: Vec<super::texture::Texture>,
     pub render_pipelines: HashMap<RenderPipelineInfo, wgpu::RenderPipeline>,
 }
 
 impl RenderingContext {
     const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-    fn create_depth_texture(
-        device: &wgpu::Device, 
-        size: (u32, u32)
-    ) -> (wgpu::Texture, wgpu::TextureView) {
-        let size = wgpu::Extent3d {
-            width: size.0,
-            height: size.1,
-            depth_or_array_layers: 1
-        };
+    // fn create_depth_texture(
+    //     device: &wgpu::Device, 
+    //     size: (u32, u32)
+    // ) -> (wgpu::Texture, wgpu::TextureView) {
+    //     let size = wgpu::Extent3d {
+    //         width: size.0,
+    //         height: size.1,
+    //         depth_or_array_layers: 1
+    //     };
 
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Depth texture"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: Self::DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-        });
+    //     let texture = device.create_texture(&wgpu::TextureDescriptor {
+    //         label: Some("Depth texture"),
+    //         size,
+    //         mip_level_count: 1,
+    //         sample_count: 1,
+    //         dimension: wgpu::TextureDimension::D2,
+    //         format: Self::DEPTH_FORMAT,
+    //         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+    //     });
 
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    //     let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        (texture, texture_view)
-    }
+    //     (texture, texture_view)
+    // }
 
     pub async fn new<W>(window_size: impl Into<[u32; 2]>, window: &W) -> Self
     where
@@ -104,9 +106,12 @@ impl RenderingContext {
     {
         let window_size = window_size.into();
 
-        let instance = wgpu::Instance::new(wgpu::Backends::PRIMARY);
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::all(),
+            dx12_shader_compiler: wgpu::Dx12Compiler::Fxc
+        });
 
-        let surface = unsafe { instance.create_surface(window) };
+        let surface = unsafe { instance.create_surface(window) }.unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
@@ -129,12 +134,11 @@ impl RenderingContext {
             .expect("Couldn't create indigo device");
 
         let swapchain_format = surface
-            .get_supported_formats(&adapter)
+            .get_capabilities(&adapter)
+            .formats
             .into_iter()
             .find(|format| {
-                let desc = format.describe();
-
-                desc.srgb
+                format.is_srgb()
             })
             .expect("Couldn't find appropriate surface");
 
@@ -145,6 +149,7 @@ impl RenderingContext {
             width: window_size[0],
             height: window_size[1],
             present_mode: wgpu::PresentMode::AutoVsync,
+            view_formats: vec![]
         };
 
         surface.configure(&device, &config);
@@ -167,12 +172,6 @@ impl RenderingContext {
             mapped_at_creation: false,
         });
 
-        let (depth_texture, depth_texture_view) = Self::create_depth_texture(
-            &device, 
-            (config.width, config.height)
-        );
-
-
         Self {
             queue,
             device,
@@ -184,9 +183,6 @@ impl RenderingContext {
             vertex_buffer,
             index_buffer,
 
-            depth_texture,
-            depth_texture_view,
-
             shader_modules: HashMap::new(),
             uniform_bindings: Vec::new(),
             textures: Vec::new(),
@@ -194,145 +190,66 @@ impl RenderingContext {
         }
     }
 
-    pub fn update_depth_texture(&mut self, new_size: (u32, u32)) {
-        let (tex, view) = Self::create_depth_texture(&self.device, new_size);
-        self.depth_texture = tex;
-        self.depth_texture_view = view;
-    }
-
-    pub fn render_batches(
+    pub fn render_mesh(
         &mut self,
-        batches: Vec<(BatchInfo, PackedMesh)>,
-        distinct_uniforms: Vec<Uniform>,
-        texture: Option<usize>,
-        clear: Option<wgpu::Color>
-    ) -> Result<(), wgpu::SurfaceError>{
+        shader: Shader,
+        mesh: &PackedMesh,
+        uniforms: Vec<Uniform>,
+        textures: Vec<TextureHandle>,
+        output_texture: TextureHandle,
+        depth_texture: Option<TextureHandle>,
+        clear: Option<wgpu::Color>,
+    ) -> Result<(), wgpu::SurfaceError> {
+        let uniform_binding_ids = self.find_or_create_uniform_bindings(&uniforms);
 
-        let assigned_binding_ids = self.find_or_create_uniform_bindings(&distinct_uniforms);
-
-        //Update uniforms
-        for (original_idx, binding_id) in assigned_binding_ids.iter() {
+        for (original_idx, binding_id) in uniform_binding_ids.iter() {
             let binding = self.uniform_bindings.get(*binding_id).unwrap();
-            binding.update(&self.queue, &distinct_uniforms[*original_idx].data);
+            binding.update(&self.queue, &uniforms[*original_idx].data);
         }
 
-        struct DrawCallData {
-            pipeline_info: RenderPipelineInfo,
-            textures: Vec<usize>,
-            uniform_binding_ids: Vec<usize>,
-            //Start and end offsets into the vertex and index buffers
-            vertex_offsets: (u64, u64),
-            index_offsets: (u64, u64),
-            //Total amount of indices (could be computed later from offsets but w/e)
-            index_count: u32,
-        }
+        let binding_ids = uniform_binding_ids
+                .into_iter()
+                .map(|(_, id)| id)
+                .collect::<Vec<_>>();
 
-        let mut full_vert_data = Vec::new();
-        let mut full_index_data = Vec::new();
+        let pipeline_info = RenderPipelineInfo {
+            vertex_layout: mesh.layout.clone(),
+            shader,
+            textures: textures.clone(),
+            depth: match depth_texture {
+                Some(_) => true,
+                None => false,
+            },
+            uniform_binding_ids: binding_ids.clone()
+        };
 
-        let draw_calls = batches
-            .into_iter()
-            //Add padding (since apparently copy buffers need to have an alignment of 4)
-            //this has to be done before calculating the offset so sadly 2 maps are needed 
-            .map(|(info, mut mesh)| {
-                while mesh.indices.len() % 4 != 0 {
-                    mesh.indices.push(*mesh.indices.last().unwrap())
-                }
+        self.create_pipeline_if_doesnt_exist(&pipeline_info);
 
-                (info, mesh)
-            })
-            .scan((0, 0), |(vert_end_offset, index_end_offset), (info, mut mesh)| {
-                
-                let vertex_count = mesh.vertices.len();
-                let index_count = mesh.indices.len();
-
-                //Calculate end offsets into the vertex/index buffers for each mesh
-                let size_of_vert = std::mem::size_of::<u8>() * vertex_count;
-                let size_of_idx = std::mem::size_of::<u16>() * index_count;
-                *vert_end_offset += size_of_vert;
-                *index_end_offset += size_of_idx;
-                //Compute the starting offset for current mesh
-                let vert_start_offset = *vert_end_offset - std::mem::size_of::<u8>() * vertex_count;
-                let index_start_offset = *index_end_offset - std::mem::size_of::<u16>() * index_count;
-    
-                full_vert_data.append(&mut mesh.vertices);
-                full_index_data.append(&mut mesh.indices);
-                
-                Some((
-                    *vert_end_offset,
-                    *index_end_offset,
-                    vert_start_offset,
-                    index_start_offset,
-                    info,
-                    index_count,
-                ))
-            })
-            .map(|(
-                vert_end_offset, 
-                index_end_offset, 
-                vert_start_offset,
-                index_start_offset,
-                batch_info, 
-                index_count,
-            )| {
-                let pipeline_binding_ids = batch_info.distinct_uniform_ids
-                    .iter()
-                    // Since distinct uniforms id contains ids into the user given vector,
-                    // we have to map them to the bindings assigned by find_or_create_uniform_bindings
-                    .map(|id| assigned_binding_ids
-                            .iter()
-                            .find(|(original_idx, _)| original_idx == id)
-                            .unwrap()
-                            //The value is (original_idx, assigned_idx) thus .1 gets the assigned index
-                            .1
-                    )
-                    .collect::<Vec<_>>();
-                
-                let pipeline_info = RenderPipelineInfo {
-                    vertex_layout: batch_info.layout,
-                    shader: batch_info.shader,
-                    textures: batch_info.textures.clone(),
-                    uniform_binding_ids: pipeline_binding_ids,
-                };
-                
-                self.create_pipeline_if_doesnt_exist(&pipeline_info);                
-                
-                DrawCallData {
-                    pipeline_info,
-                    textures: batch_info.textures,
-                    uniform_binding_ids: batch_info.distinct_uniform_ids,
-                    vertex_offsets: (vert_start_offset as u64, vert_end_offset as u64),
-                    index_offsets: (index_start_offset as u64, index_end_offset as u64),
-                    index_count: index_count as u32,
-                }
-            }).collect::<Vec<_>>();
-
-        self.queue.write_buffer(
-            &self.vertex_buffer, 
-            0,
-            bytemuck::cast_slice(&full_vert_data)
-        );
-
-        self.queue.write_buffer(
-            &self.index_buffer, 
-            0,
-            bytemuck::cast_slice(&full_index_data)
-        );
-
+        self.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&mesh.vertices));
+        self.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&mesh.indices));
 
         let mut encoder = self.device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("rendering encoder"),
+                label: Some("Rendering encoder")
             });
 
-        let output = self.surface.get_current_texture()?;
-        let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        
-        let output_tex = match texture {
-            Some(id) => &self.textures.get(id).expect("Texture does not exist").texture_view,
-            None => &output_view,
-        };
+        let output_tex = &self.textures.get(output_texture).expect("output texture does not exist)").texture_view;
 
+        let depth_stencil_attachment = depth_texture.and_then(|id| {
+            let depth_texture = &self.textures.get(id).expect("depth texture does not exist").texture_view;
+
+            Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_texture,
+                depth_ops: Some(wgpu::Operations {
+                    load: match clear {
+                        Some(_) => wgpu::LoadOp::Clear(1.0),
+                        None => wgpu::LoadOp::Load,
+                    },
+                    store: true,
+                }),
+                stencil_ops: None,
+            })
+        });
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("render pass"),
@@ -342,69 +259,309 @@ impl RenderingContext {
                 ops: wgpu::Operations {
                     load: match clear {
                         Some(color) => wgpu::LoadOp::Clear(color),
-                        _ => wgpu::LoadOp::Load,
+                        None => wgpu::LoadOp::Load
                     },
                     store: true,
-                },
+                }
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.depth_texture_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: match clear {
-                        Some(color) => wgpu::LoadOp::Clear(1.0),
-                        _ => wgpu::LoadOp::Load,
-                    },
-                    store: true,
-                }),
-                stencil_ops: None,
-            }),
+            depth_stencil_attachment
         });
 
-        
-        for draw_call in draw_calls.into_iter() {
+        let pipeline = self.render_pipelines.get(&pipeline_info).unwrap();
 
-            let (v_start, v_end) = draw_call.vertex_offsets;
-            let (i_start, i_end) = draw_call.index_offsets;
+        render_pass.set_pipeline(pipeline);
 
-            if v_start == v_end || i_start == i_end { continue } 
-            
-            
-            let pipeline = self.render_pipelines.get(&draw_call.pipeline_info).unwrap();
-    
-            render_pass.set_pipeline(pipeline);
-    
-            let mut bind_group_idx = 0;
-            
-            //Rework this
-            for uniform_binding_id in draw_call.uniform_binding_ids.iter() {
-                let assigned_binding = self.uniform_bindings.get(*uniform_binding_id).unwrap();
-                render_pass.set_bind_group(bind_group_idx, &assigned_binding.bind_group, &[]);
-                bind_group_idx += 1;
-            }
-    
-            for texture_index in draw_call.textures.iter() {
-                let texture = self.textures.get(*texture_index).unwrap();
-                render_pass.set_bind_group(bind_group_idx, &texture.bind_group, &[]);
-                bind_group_idx += 1;
-            }
-    
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(v_start..v_end));
-            render_pass.set_index_buffer(self.index_buffer.slice(i_start..i_end), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..draw_call.index_count, 0, 0..1);
+        let mut bind_group_idx = 0;
+        for uniform_binding_id in binding_ids.iter() {
+            let binding = self.uniform_bindings.get(*uniform_binding_id).unwrap();
+
+            render_pass.set_bind_group(bind_group_idx as u32, &binding.bind_group, &[]);
+
+            bind_group_idx += 1;
         }
+        
+        for texture_id in textures.iter() {
+            let texture = self.textures.get(*texture_id).unwrap();
+
+            render_pass.set_bind_group(bind_group_idx, &texture.bind_group, &[]);
+
+            bind_group_idx += 1;
+        }
+
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+        render_pass.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
 
         drop(render_pass);
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        
-        match texture {
-            Some(_) => {}
-            None => output.present(),
-        };
-
 
         Ok(())
     }
+
+    pub fn display_tex(&mut self, texture: TextureHandle) -> Result<(), wgpu::SurfaceError> {
+        let output = self.surface.get_current_texture()?;
+        let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let fullscreen_shader = self.load_shader(FULLSCREEN_SHADER, "vs", FULLSCREEN_SHADER, "fs");
+
+        let mut encoder = self.device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("fullscreen Rendering encoder")
+            });
+
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("render pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &output_view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: true,
+                }
+            })],
+            depth_stencil_attachment: None
+        });
+
+        let pipeline_info = RenderPipelineInfo {
+            vertex_layout: VertexLayoutInfo { 
+                array_stride: 0, 
+                step_mode: wgpu::VertexStepMode::Vertex, 
+                attributes: vec![], 
+                total_size: 0 
+            },
+            shader: fullscreen_shader,
+            textures: vec![texture],
+            depth: false,
+            uniform_binding_ids: vec![]
+        };
+
+        let pipeline = self.render_pipelines.get(&pipeline_info).unwrap();
+
+        render_pass.set_pipeline(pipeline);
+
+        let texture = self.textures.get(texture).unwrap();
+
+        render_pass.set_bind_group(0, &texture.bind_group, &[]);
+
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+
+        render_pass.draw(0..6, 0..1);
+
+        drop(render_pass);
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+
+        output.present(); 
+
+        Ok(())
+    }
+
+    // pub fn render_batches(
+    //     &mut self,
+    //     batches: Vec<(BatchInfo, PackedMesh)>,
+    //     distinct_uniforms: Vec<Uniform>,
+    //     output_texture: Option<TextureHandle>,
+    //     clear: Option<wgpu::Color>
+    // ) -> Result<(), wgpu::SurfaceError>{
+
+    //     let assigned_binding_ids = self.find_or_create_uniform_bindings(&distinct_uniforms);
+
+    //     //Update uniforms
+    //     for (original_idx, binding_id) in assigned_binding_ids.iter() {
+    //         let binding = self.uniform_bindings.get(*binding_id).unwrap();
+    //         binding.update(&self.queue, &distinct_uniforms[*original_idx].data);
+    //     }
+
+    //     struct DrawCallData {
+    //         pipeline_info: RenderPipelineInfo,
+    //         textures: Vec<TextureHandle>,
+    //         uniform_binding_ids: Vec<usize>,
+    //         //Start and end offsets into the vertex and index buffers
+    //         vertex_offsets: (u64, u64),
+    //         index_offsets: (u64, u64),
+    //         //Total amount of indices (could be computed later from offsets but w/e)
+    //         index_count: u32,
+    //     }
+
+    //     let mut full_vert_data = Vec::new();
+    //     let mut full_index_data = Vec::new();
+
+    //     let draw_calls = batches
+    //         .into_iter()
+    //         //Add padding (since apparently copy buffers need to have an alignment of 4)
+    //         //this has to be done before calculating the offset so sadly 2 maps are needed 
+    //         .map(|(info, mut mesh)| {
+    //             while mesh.indices.len() % 4 != 0 {
+    //                 mesh.indices.push(*mesh.indices.last().unwrap())
+    //             }
+
+    //             (info, mesh)
+    //         })
+    //         .scan((0, 0), |(vert_end_offset, index_end_offset), (info, mut mesh)| {
+                
+    //             let vertex_count = mesh.vertices.len();
+    //             let index_count = mesh.indices.len();
+
+    //             //Calculate end offsets into the vertex/index buffers for each mesh
+    //             let size_of_vert = std::mem::size_of::<u8>() * vertex_count;
+    //             let size_of_idx = std::mem::size_of::<u16>() * index_count;
+    //             *vert_end_offset += size_of_vert;
+    //             *index_end_offset += size_of_idx;
+    //             //Compute the starting offset for current mesh
+    //             let vert_start_offset = *vert_end_offset - std::mem::size_of::<u8>() * vertex_count;
+    //             let index_start_offset = *index_end_offset - std::mem::size_of::<u16>() * index_count;
+    
+    //             full_vert_data.append(&mut mesh.vertices);
+    //             full_index_data.append(&mut mesh.indices);
+                
+    //             Some((
+    //                 *vert_end_offset,
+    //                 *index_end_offset,
+    //                 vert_start_offset,
+    //                 index_start_offset,
+    //                 info,
+    //                 index_count,
+    //             ))
+    //         })
+    //         .map(|(
+    //             vert_end_offset, 
+    //             index_end_offset, 
+    //             vert_start_offset,
+    //             index_start_offset,
+    //             batch_info, 
+    //             index_count,
+    //         )| {
+    //             let pipeline_binding_ids = batch_info.distinct_uniform_ids
+    //                 .iter()
+    //                 // Since distinct uniforms id contains ids into the user given vector,
+    //                 // we have to map them to the bindings assigned by find_or_create_uniform_bindings
+    //                 .map(|id| assigned_binding_ids
+    //                         .iter()
+    //                         .find(|(original_idx, _)| original_idx == id)
+    //                         .unwrap()
+    //                         //The value is (original_idx, assigned_idx) thus .1 gets the assigned index
+    //                         .1
+    //                 )
+    //                 .collect::<Vec<_>>();
+                
+    //             let pipeline_info = RenderPipelineInfo {
+    //                 vertex_layout: batch_info.layout,
+    //                 shader: batch_info.shader,
+    //                 textures: batch_info.textures.clone(),
+    //                 uniform_binding_ids: pipeline_binding_ids,
+    //             };
+                
+    //             self.create_pipeline_if_doesnt_exist(&pipeline_info);                
+                
+    //             DrawCallData {
+    //                 pipeline_info,
+    //                 textures: batch_info.textures,
+    //                 uniform_binding_ids: batch_info.distinct_uniform_ids,
+    //                 vertex_offsets: (vert_start_offset as u64, vert_end_offset as u64),
+    //                 index_offsets: (index_start_offset as u64, index_end_offset as u64),
+    //                 index_count: index_count as u32,
+    //             }
+    //         }).collect::<Vec<_>>();
+
+    //     self.queue.write_buffer(
+    //         &self.vertex_buffer, 
+    //         0,
+    //         bytemuck::cast_slice(&full_vert_data)
+    //     );
+
+    //     self.queue.write_buffer(
+    //         &self.index_buffer, 
+    //         0,
+    //         bytemuck::cast_slice(&full_index_data)
+    //     );
+
+
+    //     let mut encoder = self.device
+    //         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    //             label: Some("rendering encoder"),
+    //         });
+
+    //     let output = self.surface.get_current_texture()?;
+    //     let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        
+    //     let output_tex = match output_texture {
+    //         Some(id) => &self.textures.get(id).expect("Texture does not exist").texture_view,
+    //         None => &output_view,
+    //     };
+
+    //     let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    //         label: Some("render pass"),
+    //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+    //             view: output_tex,
+    //             resolve_target: None,
+    //             ops: wgpu::Operations {
+    //                 load: match clear {
+    //                     Some(color) => wgpu::LoadOp::Clear(color),
+    //                     _ => wgpu::LoadOp::Load,
+    //                 },
+    //                 store: true,
+    //             },
+    //         })],
+    //         depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+    //             view: &self.depth_texture.texture_view,
+    //             depth_ops: Some(wgpu::Operations {
+    //                 load: match clear {
+    //                     Some(color) => wgpu::LoadOp::Clear(1.0),
+    //                     _ => wgpu::LoadOp::Load,
+    //                 },
+    //                 store: true,
+    //             }),
+    //             stencil_ops: None,
+    //         }),
+    //     });
+
+        
+    //     for draw_call in draw_calls.into_iter() {
+
+    //         let (v_start, v_end) = draw_call.vertex_offsets;
+    //         let (i_start, i_end) = draw_call.index_offsets;
+
+    //         if v_start == v_end || i_start == i_end { continue } 
+            
+            
+    //         let pipeline = self.render_pipelines.get(&draw_call.pipeline_info).unwrap();
+    
+    //         render_pass.set_pipeline(pipeline);
+    
+    //         let mut bind_group_idx = 0;
+            
+    //         //Rework this
+    //         for uniform_binding_id in draw_call.uniform_binding_ids.iter() {
+    //             let assigned_binding = self.uniform_bindings.get(*uniform_binding_id).unwrap();
+    //             render_pass.set_bind_group(bind_group_idx, &assigned_binding.bind_group, &[]);
+    //             bind_group_idx += 1;
+    //         }
+    
+    //         for texture_index in draw_call.textures.iter() {
+    //             let texture = self.textures.get(*texture_index).unwrap();
+    //             render_pass.set_bind_group(bind_group_idx, &texture.bind_group, &[]);
+    //             bind_group_idx += 1;
+    //         }
+    
+    //         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(v_start..v_end));
+    //         render_pass.set_index_buffer(self.index_buffer.slice(i_start..i_end), wgpu::IndexFormat::Uint16);
+    //         render_pass.draw_indexed(0..draw_call.index_count, 0, 0..1);
+    //     }
+
+    //     drop(render_pass);
+
+    //     self.queue.submit(std::iter::once(encoder.finish()));
+        
+    //     match output_texture {
+    //         Some(_) => {}
+    //         None => output.present(),
+    //     };
+
+
+    //     Ok(())
+    // }
 
     pub fn find_or_create_uniform_bindings(
         &mut self,
@@ -562,13 +719,16 @@ impl RenderingContext {
                     unclipped_depth: false,
                     conservative: false,
                 },
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: Self::DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: wgpu::CompareFunction::Less,
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default()
-                }),
+                depth_stencil: match pipeline_info.depth {
+                    true => Some(wgpu::DepthStencilState {
+                        format: Self::DEPTH_FORMAT,
+                        depth_write_enabled: true,
+                        depth_compare: wgpu::CompareFunction::Less,
+                        stencil: wgpu::StencilState::default(),
+                        bias: wgpu::DepthBiasState::default()
+                    }),
+                    false => None,
+                },  
                 multisample: wgpu::MultisampleState {
                     count: 1,
                     mask: !0,
@@ -599,12 +759,14 @@ impl RenderingContext {
         )
     }
 
-    pub fn create_texture(&mut self, data: &[u8], dimensions: (u32, u32)) -> usize {
+    pub fn create_texture(&mut self, data: &[u8], dimensions: (u32, u32)) -> TextureHandle {
         let texture = Texture::new(
             &self.device,
             &self.queue,
             data,
-            dimensions
+            dimensions,
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
         );
 
         self.textures.push(texture);
@@ -613,9 +775,40 @@ impl RenderingContext {
         index
     }
 
+    pub fn create_display_texture(&mut self) -> TextureHandle {
+        let texture = Texture::new(
+            &self.device,
+            &self.queue,
+            &(0..self.config.width * self.config.height * 4).map(|_| 0).collect::<Vec<_>>(),
+            (self.config.width, self.config.height), 
+            self.swapchain_format,
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT
+        );
+
+        self.textures.push(texture);
+        let index = self.textures.len() - 1;
+
+        index
+    }
+    pub fn create_depth_texture(&mut self) -> TextureHandle {
+        let depth_texture = Texture::new(
+            &self.device, 
+            &self.queue, 
+            &[], 
+            (self.config.width, self.config.height), 
+            wgpu::TextureFormat::Depth32Float, 
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+        );
+
+        self.textures.push(depth_texture);
+        let index = self.textures.len() - 1;
+
+        index
+    }
+
     pub fn update_texture(
         &mut self, 
-        texture_handle: usize, 
+        texture_handle: TextureHandle, 
         data: &[u8], 
     ) {
         if let Some(texture) = self.textures.get_mut(texture_handle) { 
@@ -628,7 +821,8 @@ impl RenderingContext {
 pub struct RenderPipelineInfo {
     vertex_layout: VertexLayoutInfo,
     shader: Shader,
-    textures: Vec<usize>,
+    textures: Vec<TextureHandle>,
+    depth: bool,
     uniform_binding_ids: Vec<usize>,
 }
 
@@ -638,6 +832,7 @@ impl PartialEq for RenderPipelineInfo {
         && self.shader == other.shader
         && self.textures.len() == other.textures.len()
         && self.uniform_binding_ids == other.uniform_binding_ids
+        && self.depth == other.depth
     }
 }
 
@@ -648,6 +843,7 @@ impl Hash for RenderPipelineInfo {
         self.textures.len().hash(state);
         self.shader.hash(state);
         self.uniform_binding_ids.hash(state);
+        self.depth.hash(state);
     }
 }
 
@@ -655,7 +851,7 @@ impl Hash for RenderPipelineInfo {
 pub struct BatchInfo {
     pub layout: VertexLayoutInfo,
     pub shader: Shader,
-    pub textures: Vec<usize>,
+    pub textures: Vec<TextureHandle>,
     pub distinct_uniform_ids: Vec<usize>,
     pub transparent: bool,
 }
@@ -684,7 +880,7 @@ impl BatchInfo {
     pub fn new(
         mesh: &PackedMesh,
         shader: Shader,
-        textures: Vec<usize>,
+        textures: Vec<TextureHandle>,
         distinct_uniform_ids: Vec<usize>
     ) -> Self {
         Self {
