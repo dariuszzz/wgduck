@@ -199,6 +199,7 @@ impl RenderingContext {
         output_texture: TextureHandle,
         depth_texture: Option<TextureHandle>,
         clear: Option<wgpu::Color>,
+        clear_depth: bool,
     ) -> Result<(), wgpu::SurfaceError> {
         let uniform_binding_ids = self.find_or_create_uniform_bindings(&uniforms);
 
@@ -212,6 +213,9 @@ impl RenderingContext {
                 .map(|(_, id)| id)
                 .collect::<Vec<_>>();
 
+
+        let output_format = self.textures.get(output_texture).expect("output texture does not exist)").format.clone();
+
         let pipeline_info = RenderPipelineInfo {
             vertex_layout: mesh.layout.clone(),
             shader,
@@ -220,7 +224,8 @@ impl RenderingContext {
                 Some(_) => true,
                 None => false,
             },
-            uniform_binding_ids: binding_ids.clone()
+            uniform_binding_ids: binding_ids.clone(),
+            output_format: output_format
         };
 
         self.create_pipeline_if_doesnt_exist(&pipeline_info);
@@ -241,9 +246,9 @@ impl RenderingContext {
             Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_texture,
                 depth_ops: Some(wgpu::Operations {
-                    load: match clear {
-                        Some(_) => wgpu::LoadOp::Clear(1.0),
-                        None => wgpu::LoadOp::Load,
+                    load: match clear_depth {
+                        true => wgpu::LoadOp::Clear(1.0),
+                        false => wgpu::LoadOp::Load,
                     },
                     store: true,
                 }),
@@ -317,7 +322,7 @@ impl RenderingContext {
                 view: &output_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
                     store: true,
                 }
             })],
@@ -334,9 +339,11 @@ impl RenderingContext {
             shader: fullscreen_shader,
             textures: vec![texture],
             depth: false,
-            uniform_binding_ids: vec![]
+            uniform_binding_ids: vec![],
+            output_format: self.swapchain_format
         };
 
+        self.create_pipeline_if_doesnt_exist(&pipeline_info);
         let pipeline = self.render_pipelines.get(&pipeline_info).unwrap();
 
         render_pass.set_pipeline(pipeline);
@@ -698,7 +705,7 @@ impl RenderingContext {
                     module: frag_module,
                     entry_point: &pipeline_info.shader.frag_entry,
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: self.swapchain_format,
+                        format: pipeline_info.output_format,
                         blend: Some(wgpu::BlendState {
                             color: wgpu::BlendComponent {
                                 operation: wgpu::BlendOperation::Add,
@@ -766,7 +773,7 @@ impl RenderingContext {
             data,
             dimensions,
             wgpu::TextureFormat::Rgba8UnormSrgb,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC
         );
 
         self.textures.push(texture);
@@ -782,7 +789,7 @@ impl RenderingContext {
             &(0..self.config.width * self.config.height * 4).map(|_| 0).collect::<Vec<_>>(),
             (self.config.width, self.config.height), 
             self.swapchain_format,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT 
         );
 
         self.textures.push(texture);
@@ -822,6 +829,7 @@ pub struct RenderPipelineInfo {
     vertex_layout: VertexLayoutInfo,
     shader: Shader,
     textures: Vec<TextureHandle>,
+    output_format: wgpu::TextureFormat,
     depth: bool,
     uniform_binding_ids: Vec<usize>,
 }
@@ -833,6 +841,7 @@ impl PartialEq for RenderPipelineInfo {
         && self.textures.len() == other.textures.len()
         && self.uniform_binding_ids == other.uniform_binding_ids
         && self.depth == other.depth
+        && self.output_format == other.output_format
     }
 }
 
@@ -844,6 +853,7 @@ impl Hash for RenderPipelineInfo {
         self.shader.hash(state);
         self.uniform_binding_ids.hash(state);
         self.depth.hash(state);
+        self.output_format.hash(state);
     }
 }
 

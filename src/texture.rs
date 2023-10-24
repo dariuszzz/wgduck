@@ -82,7 +82,6 @@ impl Texture {
         }
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(format),
             ..Default::default()
         });
         let texture_sampler = device.create_sampler(
@@ -90,9 +89,9 @@ impl Texture {
                 address_mode_u: wgpu::AddressMode::ClampToEdge,
                 address_mode_v: wgpu::AddressMode::ClampToEdge,
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Nearest,
-                min_filter: wgpu::FilterMode::Nearest,
-                mipmap_filter: wgpu::FilterMode::Nearest,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             }
         );
@@ -177,10 +176,24 @@ impl Texture {
             }
         );
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // self.texture.destroy();
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Sampler(&self.texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&texture_view),
+                }
+            ],
+        });
+        // NOTE: idk if texture.destroy() has to be called or if it is called automatically
         self.texture_view = texture_view;
         self.texture = texture;  
+        self.bind_group = bind_group;
         self.dimensions = dimensions;
     }
 }
