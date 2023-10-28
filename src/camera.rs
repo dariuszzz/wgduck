@@ -51,7 +51,14 @@ impl OrthoCamera {
         let scale_x = width / self.zoom;
         let scale_y = height / self.zoom;
 
-        let proj = glm::ortho(-scale_x, scale_x, -scale_y, scale_y, -self.zfar, self.zfar);
+        let proj = glm::ortho(
+            -scale_x, 
+            scale_x, 
+            -scale_y, 
+            scale_y, 
+            -self.zfar, 
+            self.zfar
+        );
 
         proj
     }
@@ -60,7 +67,7 @@ impl OrthoCamera {
         let view = self.build_view_matrix();
         let proj = self.build_proj_matrix(window_size);
         
-        OPENGL_TO_WGPU_MATRIX * proj * view
+        proj * view
     }
 
     pub fn new(
