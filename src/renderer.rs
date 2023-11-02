@@ -201,6 +201,9 @@ impl RenderingContext {
         clear: Option<wgpu::Color>,
         clear_depth: bool,
     ) -> Result<(), wgpu::SurfaceError> {
+        // Stupid but i dont want mesh to be &mut PackedMesh or PackedMesh
+        let mut mesh = mesh.clone();
+
         let uniform_binding_ids = self.find_or_create_uniform_bindings(&uniforms);
 
         for (original_idx, binding_id) in uniform_binding_ids.iter() {
@@ -209,10 +212,9 @@ impl RenderingContext {
         }
 
         let binding_ids = uniform_binding_ids
-                .into_iter()
-                .map(|(_, id)| id)
-                .collect::<Vec<_>>();
-
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect::<Vec<_>>();
 
         let output_format = self.textures.get(output_texture).expect("output texture does not exist)").format.clone();
 
@@ -229,6 +231,10 @@ impl RenderingContext {
         };
 
         self.create_pipeline_if_doesnt_exist(&pipeline_info);
+
+        while (mesh.indices.len() % 4 != 0) {
+            mesh.indices.push(*mesh.indices.last().unwrap());
+        }
 
         self.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&mesh.vertices));
         self.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&mesh.indices));
