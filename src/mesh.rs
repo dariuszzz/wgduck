@@ -94,6 +94,7 @@ impl Mesh<u8> {
 }
 
 impl<V: Vertex> Mesh<V> {
+
     pub fn merge(&mut self, other: &mut Mesh<V>) {
         assert!(self.layout == other.layout);
 
@@ -115,7 +116,6 @@ impl<V: Vertex> Mesh<V> {
         self.indices.append(&mut other.indices);
         self.vertices.append(&mut other.vertices);
 
-
         if other.could_be_transparent {
             self.could_be_transparent = true;
         }
@@ -124,6 +124,15 @@ impl<V: Vertex> Mesh<V> {
 
 impl<V: Vertex> Mesh<V> {
 
+    pub fn merge_into_new(others: &mut [Mesh<V>]) -> Self {
+        let mut this = Self::new(vec![], vec![], false);
+
+        for other in others {
+            this.merge(other);
+        }
+
+        this
+    }
 
     pub fn new(vertices: Vec<V>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
         
