@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io::empty;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use ordered_float::NotNan;
+use wgpu::rwh::{self, HasWindowHandle};
 use wgpu::{
-    Device, Queue, Surface, SurfaceConfiguration,
-    TextureFormat, InstanceDescriptor, 
+    Device, InstanceDescriptor, InstanceFlags, Queue, Surface, SurfaceConfiguration, SurfaceTarget, TextureFormat, WindowHandle 
 };
+use winit::window::Window;
 
 use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
 use crate::shader::{Shader, ShaderModule};
@@ -54,8 +57,8 @@ impl Color {
     }
 }
 
-pub struct RenderingContext {
-    pub surface: Surface,
+pub struct RenderingContext<'a> {
+    pub surface: Surface<'a>,
     pub swapchain_format: TextureFormat,
     pub queue: Queue,
     pub device: Device,
@@ -72,7 +75,7 @@ pub struct RenderingContext {
     pub render_pipelines: HashMap<RenderPipelineInfo, wgpu::RenderPipeline>,
 }
 
-impl RenderingContext {
+impl<'a> RenderingContext<'a>  {
     const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
     // fn create_depth_texture(
@@ -100,18 +103,18 @@ impl RenderingContext {
     //     (texture, texture_view)
     // }
 
-    pub async fn new<W>(window_size: impl Into<[u32; 2]>, window: &W) -> Self
-    where
-        W: raw_window_handle::HasRawWindowHandle + raw_window_handle::HasRawDisplayHandle,
+    pub async fn new<'b: 'a>(window_size: impl Into<[u32; 2]>, window: &'b Window) -> Self
     {
         let window_size = window_size.into();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+            flags: InstanceFlags::debugging(),
+            gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
             backends: wgpu::Backends::all(),
             dx12_shader_compiler: wgpu::Dx12Compiler::Fxc
         });
 
-        let surface = unsafe { instance.create_surface(window) }.unwrap();
+        let surface = instance.create_surface(window).unwrap();
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::LowPower,
@@ -125,8 +128,8 @@ impl RenderingContext {
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("Indigo device"),
-                    features: wgpu::Features::empty(),
-                    limits: wgpu::Limits::default(),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::downlevel_defaults(),
                 },
                 None,
             )
@@ -143,6 +146,7 @@ impl RenderingContext {
             .expect("Couldn't find appropriate surface");
 
         let config = wgpu::SurfaceConfiguration {
+            desired_maximum_frame_latency: 1,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: swapchain_format,
@@ -256,13 +260,15 @@ impl RenderingContext {
                         true => wgpu::LoadOp::Clear(1.0),
                         false => wgpu::LoadOp::Load,
                     },
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
             })
         });
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            timestamp_writes: None,
+            occlusion_query_set: None,
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: output_tex,
@@ -272,7 +278,7 @@ impl RenderingContext {
                         Some(color) => wgpu::LoadOp::Clear(color),
                         None => wgpu::LoadOp::Load
                     },
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 }
             })],
             depth_stencil_attachment
@@ -323,13 +329,15 @@ impl RenderingContext {
             });
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            timestamp_writes: None,
+            occlusion_query_set: None,
             label: Some("render pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: &output_view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
-                    store: true,
+                    store: wgpu::StoreOp::Store,
                 }
             })],
             depth_stencil_attachment: None

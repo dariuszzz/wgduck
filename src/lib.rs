@@ -8,6 +8,7 @@ pub mod vertex;
 pub mod texture;
 
 //Reexports
+pub use winit;
 pub use wgpu;
 pub use nalgebra_glm as glm;
 pub use bytemuck;
