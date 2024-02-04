@@ -57,6 +57,17 @@ impl Color {
     }
 }
 
+#[derive(Clone)]
+pub struct RenderPassInfo<'a> {
+    pub shader: Shader,
+    pub uniforms: Vec<&'a Uniform>,
+    pub textures: Vec<TextureHandle>,
+    pub output_texture: TextureHandle,
+    pub depth_texture: Option<TextureHandle>,
+    pub clear: Option<wgpu::Color>,
+    pub clear_depth: bool,
+}
+
 pub struct RenderingContext<'a> {
     pub surface: Surface<'a>,
     pub swapchain_format: TextureFormat,
@@ -146,7 +157,7 @@ impl<'a> RenderingContext<'a>  {
             .expect("Couldn't find appropriate surface");
 
         let config = wgpu::SurfaceConfiguration {
-            desired_maximum_frame_latency: 1,
+            desired_maximum_frame_latency: 2,
             alpha_mode: wgpu::CompositeAlphaMode::Auto,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: swapchain_format,
@@ -194,17 +205,13 @@ impl<'a> RenderingContext<'a>  {
         }
     }
 
-    pub fn render_mesh(
+    pub fn render_mesh<'b>(
         &mut self,
-        shader: Shader,
         mesh: &PackedMesh,
-        uniforms: Vec<Uniform>,
-        textures: Vec<TextureHandle>,
-        output_texture: TextureHandle,
-        depth_texture: Option<TextureHandle>,
-        clear: Option<wgpu::Color>,
-        clear_depth: bool,
+        render_data: &RenderPassInfo<'b>
     ) -> Result<(), wgpu::SurfaceError> {
+        let RenderPassInfo { shader, uniforms, textures, output_texture, depth_texture, clear, clear_depth } = render_data;
+
         // Stupid but i dont want mesh to be &mut PackedMesh or PackedMesh
         let mut mesh = mesh.clone();
 
@@ -220,11 +227,11 @@ impl<'a> RenderingContext<'a>  {
             .map(|(_, id)| id)
             .collect::<Vec<_>>();
 
-        let output_format = self.textures.get(output_texture).expect("output texture does not exist)").format.clone();
+        let output_format = self.textures.get(*output_texture).expect("output texture does not exist)").format.clone();
 
         let pipeline_info = RenderPipelineInfo {
             vertex_layout: mesh.layout.clone(),
-            shader,
+            shader: shader.clone(),
             textures: textures.clone(),
             depth: match depth_texture {
                 Some(_) => true,
@@ -248,7 +255,7 @@ impl<'a> RenderingContext<'a>  {
                 label: Some("Rendering encoder")
             });
 
-        let output_tex = &self.textures.get(output_texture).expect("output texture does not exist)").texture_view;
+        let output_tex = &self.textures.get(*output_texture).expect("output texture does not exist)").texture_view;
 
         let depth_stencil_attachment = depth_texture.and_then(|id| {
             let depth_texture = &self.textures.get(id).expect("depth texture does not exist").texture_view;
@@ -275,7 +282,7 @@ impl<'a> RenderingContext<'a>  {
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: match clear {
-                        Some(color) => wgpu::LoadOp::Clear(color),
+                        Some(color) => wgpu::LoadOp::Clear(*color),
                         None => wgpu::LoadOp::Load
                     },
                     store: wgpu::StoreOp::Store,
@@ -586,7 +593,7 @@ impl<'a> RenderingContext<'a>  {
 
     pub fn find_or_create_uniform_bindings(
         &mut self,
-        uniforms: &[Uniform],
+        uniforms: &[&Uniform],
     ) -> Vec<(usize, usize)> {
         let mut chosen_bindings: Vec<(usize, usize)> = Vec::new();
 
@@ -611,7 +618,7 @@ impl<'a> RenderingContext<'a>  {
                 //if the uniform is dynamic
                 if let Some(DynamicInfo { min_size, max_size }) = dynamic {
                     // only pick dynamic buffers
-                    if binding.min_size <= min_size && binding.max_size >= max_size && !chosen_bindings.contains(&(original_idx, binding_idx)) {
+                    if binding.min_size <= *min_size && binding.max_size >= *max_size && !chosen_bindings.contains(&(original_idx, binding_idx)) {
                         chosen_bindings.push((original_idx, binding_idx));
                         continue 'outer;
                     }
