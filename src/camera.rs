@@ -126,7 +126,7 @@ impl PerspectiveCamera {
         let view = self.build_view_matrix();
         let proj = self.build_proj_matrix(window_size);
         
-        OPENGL_TO_WGPU_MATRIX * proj * view
+        proj * view
     }
 
     pub fn new(
