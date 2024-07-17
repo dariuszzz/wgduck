@@ -1,10 +1,10 @@
 use std::marker::PhantomData;
 
+use encase::UniformBuffer;
 use glm::Vec3;
 use wgpu::VertexFormat;
 
-
-use crate::vertex::{Vertex};
+use crate::vertex::Vertex;
 
 use nalgebra_glm as glm;
 
@@ -28,23 +28,23 @@ impl VertexLayoutInfo {
     pub fn from_vertex<V: Vertex>() -> Self {
         let mut total_size = 0 as wgpu::BufferAddress;
         let attributes = V::fields()
-                .into_iter()
-                .scan(0, |offset, vformat| {
-                    total_size += vformat.size();
-                    *offset += vformat.size();
-                    Some((*offset, vformat))
-                })
-                .enumerate()
-                .map(|(index, (offset, vformat))| {
-                    wgpu::VertexAttribute {
-                        // Need to subtract the current format size in order to for the offsets
-                        // to start at zero
-                        offset: offset - vformat.size(),
-                        shader_location: index as u32,
-                        format: vformat,
-                    }
-                })
-                .collect::<Vec<_>>();
+            .into_iter()
+            .scan(0, |offset, vformat| {
+                total_size += vformat.size();
+                *offset += vformat.size();
+                Some((*offset, vformat))
+            })
+            .enumerate()
+            .map(|(index, (offset, vformat))| {
+                wgpu::VertexAttribute {
+                    // Need to subtract the current format size in order to for the offsets
+                    // to start at zero
+                    offset: offset - vformat.size(),
+                    shader_location: index as u32,
+                    format: vformat,
+                }
+            })
+            .collect::<Vec<_>>();
 
         Self {
             array_stride: total_size,
@@ -62,7 +62,6 @@ pub struct Mesh<V> {
     pub layout: VertexLayoutInfo,
     pub could_be_transparent: bool,
 }
-
 
 impl Mesh<u8> {
     pub fn merge(&mut self, other: &mut Mesh<u8>) {
@@ -86,7 +85,6 @@ impl Mesh<u8> {
         self.indices.append(&mut other.indices);
         self.vertices.append(&mut other.vertices);
 
-
         if other.could_be_transparent {
             self.could_be_transparent = true;
         }
@@ -94,7 +92,6 @@ impl Mesh<u8> {
 }
 
 impl<V: Vertex> Mesh<V> {
-
     pub fn merge(&mut self, other: &mut Mesh<V>) {
         assert!(self.layout == other.layout);
 
@@ -123,7 +120,6 @@ impl<V: Vertex> Mesh<V> {
 }
 
 impl<V: Vertex> Mesh<V> {
-
     pub fn merge_into_new(others: &mut [Mesh<V>]) -> Self {
         let mut this = Self::new(vec![], vec![], false);
 
@@ -135,7 +131,6 @@ impl<V: Vertex> Mesh<V> {
     }
 
     pub fn new(vertices: Vec<V>, indices: Vec<u16>, could_be_transparent: bool) -> Self {
-        
         Self {
             vertices,
             indices,
@@ -151,7 +146,7 @@ impl<V: Vertex> Mesh<V> {
             let rotated_pos = glm::quat_rotate_vec3(&rotation, &pos);
             vert.set_position(rotated_pos);
         }
-        
+
         Self {
             vertices,
             ..self.clone()
@@ -159,7 +154,7 @@ impl<V: Vertex> Mesh<V> {
     }
 
     pub fn apply_translation(&self, translation: glm::Vec3) -> Self {
-        let mut vertices = self.vertices.clone(); 
+        let mut vertices = self.vertices.clone();
         for vert in &mut vertices {
             let pos = vert.position();
             let rotated_pos = pos + translation;
@@ -173,6 +168,10 @@ impl<V: Vertex> Mesh<V> {
     }
 
     pub fn pack(&self) -> PackedMesh {
+        // let mut vbuf = UniformBuffer::new(Vec::<u8>::new());
+        // vbuf.write(&self.vertices).unwrap();
+        // let vbuf = vbuf.into_inner();
+
         PackedMesh {
             vertices: bytemuck::cast_slice(&self.vertices).to_vec(),
             indices: self.indices.clone(),

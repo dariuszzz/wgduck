@@ -4,17 +4,20 @@ use std::io::empty;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use encase::UniformBuffer;
+use itertools::Itertools;
 use ordered_float::NotNan;
 use wgpu::rwh::{self, HasWindowHandle};
 use wgpu::{
-    Device, InstanceDescriptor, InstanceFlags, Queue, Surface, SurfaceConfiguration, SurfaceTarget, TextureFormat, WindowHandle 
+    Device, InstanceDescriptor, InstanceFlags, PipelineCompilationOptions, Queue, Surface,
+    SurfaceConfiguration, SurfaceTarget, TextureFormat, WindowHandle,
 };
 use winit::window::Window;
 
-use crate::mesh::{VertexLayoutInfo, Mesh, PackedMesh};
+use crate::mesh::{Mesh, PackedMesh, VertexLayoutInfo};
 use crate::shader::{Shader, ShaderModule};
 use crate::texture::Texture;
-use crate::uniform::{UniformBindGroup, Uniform, DynamicInfo, self};
+use crate::uniform::{self, DynamicInfo, Uniform, UniformBindGroup};
 use crate::vertex::Vertex;
 
 pub static FULLSCREEN_SHADER: &str = include_str!("fullscreen.wgsl");
@@ -58,14 +61,19 @@ impl Color {
 }
 
 #[derive(Clone)]
+pub struct DepthTextureInfo {
+    pub depth_texture: TextureHandle,
+    pub clear_depth: bool,
+}
+
+#[derive(Clone)]
 pub struct RenderPassInfo<'a> {
     pub shader: Shader,
     pub uniforms: Vec<&'a Uniform>,
     pub textures: Vec<TextureHandle>,
     pub output_texture: TextureHandle,
-    pub depth_texture: Option<TextureHandle>,
+    pub depth: Option<DepthTextureInfo>,
     pub clear: Option<wgpu::Color>,
-    pub clear_depth: bool,
 }
 
 pub struct RenderingContext<'a> {
@@ -86,11 +94,11 @@ pub struct RenderingContext<'a> {
     pub render_pipelines: HashMap<RenderPipelineInfo, wgpu::RenderPipeline>,
 }
 
-impl<'a> RenderingContext<'a>  {
+impl<'a> RenderingContext<'a> {
     const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
     // fn create_depth_texture(
-    //     device: &wgpu::Device, 
+    //     device: &wgpu::Device,
     //     size: (u32, u32)
     // ) -> (wgpu::Texture, wgpu::TextureView) {
     //     let size = wgpu::Extent3d {
@@ -114,15 +122,14 @@ impl<'a> RenderingContext<'a>  {
     //     (texture, texture_view)
     // }
 
-    pub async fn new<'b: 'a>(window_size: impl Into<[u32; 2]>, window: &'b Window) -> Self
-    {
+    pub async fn new(window_size: impl Into<[u32; 2]>, window: Arc<Window>) -> Self {
         let window_size = window_size.into();
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             flags: InstanceFlags::debugging(),
             gles_minor_version: wgpu::Gles3MinorVersion::Automatic,
             backends: wgpu::Backends::all(),
-            dx12_shader_compiler: wgpu::Dx12Compiler::Fxc
+            dx12_shader_compiler: wgpu::Dx12Compiler::Fxc,
         });
 
         let surface = instance.create_surface(window).unwrap();
@@ -151,9 +158,7 @@ impl<'a> RenderingContext<'a>  {
             .get_capabilities(&adapter)
             .formats
             .into_iter()
-            .find(|format| {
-                format.is_srgb()
-            })
+            .find(|format| format.is_srgb())
             .expect("Couldn't find appropriate surface");
 
         let config = wgpu::SurfaceConfiguration {
@@ -164,7 +169,7 @@ impl<'a> RenderingContext<'a>  {
             width: window_size[0],
             height: window_size[1],
             present_mode: wgpu::PresentMode::AutoVsync,
-            view_formats: vec![]
+            view_formats: vec![],
         };
 
         surface.configure(&device, &config);
@@ -208,9 +213,16 @@ impl<'a> RenderingContext<'a>  {
     pub fn render_mesh<'b>(
         &mut self,
         mesh: &PackedMesh,
-        render_data: &RenderPassInfo<'b>
+        render_data: &RenderPassInfo<'b>,
     ) -> Result<(), wgpu::SurfaceError> {
-        let RenderPassInfo { shader, uniforms, textures, output_texture, depth_texture, clear, clear_depth } = render_data;
+        let RenderPassInfo {
+            shader,
+            uniforms,
+            textures,
+            output_texture,
+            depth,
+            clear,
+        } = render_data;
 
         // Stupid but i dont want mesh to be &mut PackedMesh or PackedMesh
         let mut mesh = mesh.clone();
@@ -219,26 +231,41 @@ impl<'a> RenderingContext<'a>  {
 
         for (original_idx, binding_id) in uniform_binding_ids.iter() {
             let binding = self.uniform_bindings.get(*binding_id).unwrap();
+            // println!(
+            //     "{:?} -- {:?} -- {:?} || {:?}",
+            //     *original_idx,
+            //     binding.min_size,
+            //     binding.max_size,
+            //     &uniforms[*original_idx].data.len()
+            // );
             binding.update(&self.queue, &uniforms[*original_idx].data);
         }
 
         let binding_ids = uniform_binding_ids
             .into_iter()
+            .sorted_by(|(original_idx_a, _), (original_idx_b, _)| {
+                original_idx_a.cmp(original_idx_b)
+            })
             .map(|(_, id)| id)
             .collect::<Vec<_>>();
 
-        let output_format = self.textures.get(*output_texture).expect("output texture does not exist)").format.clone();
+        let output_format = self
+            .textures
+            .get(*output_texture)
+            .expect("output texture does not exist)")
+            .format
+            .clone();
 
         let pipeline_info = RenderPipelineInfo {
             vertex_layout: mesh.layout.clone(),
             shader: shader.clone(),
             textures: textures.clone(),
-            depth: match depth_texture {
+            depth: match depth {
                 Some(_) => true,
                 None => false,
             },
             uniform_binding_ids: binding_ids.clone(),
-            output_format: output_format
+            output_format,
         };
 
         self.create_pipeline_if_doesnt_exist(&pipeline_info);
@@ -247,31 +274,49 @@ impl<'a> RenderingContext<'a>  {
             mesh.indices.push(*mesh.indices.last().unwrap());
         }
 
-        self.queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&mesh.vertices));
-        self.queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&mesh.indices));
+        self.queue
+            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&mesh.vertices));
 
-        let mut encoder = self.device
+        self.queue
+            .write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&mesh.indices));
+
+        let mut encoder = self
+            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Rendering encoder")
+                label: Some("Rendering encoder"),
             });
 
-        let output_tex = &self.textures.get(*output_texture).expect("output texture does not exist)").texture_view;
+        let output_tex = &self
+            .textures
+            .get(*output_texture)
+            .expect("output texture does not exist)")
+            .texture_view;
 
-        let depth_stencil_attachment = depth_texture.and_then(|id| {
-            let depth_texture = &self.textures.get(id).expect("depth texture does not exist").texture_view;
+        let depth_stencil_attachment = match depth {
+            None => None,
+            Some(DepthTextureInfo {
+                depth_texture,
+                clear_depth,
+            }) => {
+                let depth_texture = &self
+                    .textures
+                    .get(*depth_texture)
+                    .expect("depth texture does not exist")
+                    .texture_view;
 
-            Some(wgpu::RenderPassDepthStencilAttachment {
-                view: depth_texture,
-                depth_ops: Some(wgpu::Operations {
-                    load: match clear_depth {
-                        true => wgpu::LoadOp::Clear(1.0),
-                        false => wgpu::LoadOp::Load,
-                    },
-                    store: wgpu::StoreOp::Store,
-                }),
-                stencil_ops: None,
-            })
-        });
+                Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth_texture,
+                    depth_ops: Some(wgpu::Operations {
+                        load: match *clear_depth {
+                            true => wgpu::LoadOp::Clear(1.0),
+                            false => wgpu::LoadOp::Load,
+                        },
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                })
+            }
+        };
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             timestamp_writes: None,
@@ -283,12 +328,12 @@ impl<'a> RenderingContext<'a>  {
                 ops: wgpu::Operations {
                     load: match clear {
                         Some(color) => wgpu::LoadOp::Clear(*color),
-                        None => wgpu::LoadOp::Load
+                        None => wgpu::LoadOp::Load,
                     },
                     store: wgpu::StoreOp::Store,
-                }
+                },
             })],
-            depth_stencil_attachment
+            depth_stencil_attachment,
         });
 
         let pipeline = self.render_pipelines.get(&pipeline_info).unwrap();
@@ -303,7 +348,7 @@ impl<'a> RenderingContext<'a>  {
 
             bind_group_idx += 1;
         }
-        
+
         for texture_id in textures.iter() {
             let texture = self.textures.get(*texture_id).unwrap();
 
@@ -326,13 +371,16 @@ impl<'a> RenderingContext<'a>  {
 
     pub fn display_tex(&mut self, texture: TextureHandle) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let output_view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let fullscreen_shader = self.load_shader(FULLSCREEN_SHADER, "vs", FULLSCREEN_SHADER, "fs");
 
-        let mut encoder = self.device
+        let mut encoder = self
+            .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("fullscreen Rendering encoder")
+                label: Some("fullscreen Rendering encoder"),
             });
 
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -345,23 +393,23 @@ impl<'a> RenderingContext<'a>  {
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
                     store: wgpu::StoreOp::Store,
-                }
+                },
             })],
-            depth_stencil_attachment: None
+            depth_stencil_attachment: None,
         });
 
         let pipeline_info = RenderPipelineInfo {
-            vertex_layout: VertexLayoutInfo { 
-                array_stride: 0, 
-                step_mode: wgpu::VertexStepMode::Vertex, 
-                attributes: vec![], 
-                total_size: 0 
+            vertex_layout: VertexLayoutInfo {
+                array_stride: 0,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: vec![],
+                total_size: 0,
             },
             shader: fullscreen_shader,
             textures: vec![texture],
             depth: false,
             uniform_binding_ids: vec![],
-            output_format: self.swapchain_format
+            output_format: self.swapchain_format,
         };
 
         self.create_pipeline_if_doesnt_exist(&pipeline_info);
@@ -381,7 +429,7 @@ impl<'a> RenderingContext<'a>  {
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
-        output.present(); 
+        output.present();
 
         Ok(())
     }
@@ -419,7 +467,7 @@ impl<'a> RenderingContext<'a>  {
     //     let draw_calls = batches
     //         .into_iter()
     //         //Add padding (since apparently copy buffers need to have an alignment of 4)
-    //         //this has to be done before calculating the offset so sadly 2 maps are needed 
+    //         //this has to be done before calculating the offset so sadly 2 maps are needed
     //         .map(|(info, mut mesh)| {
     //             while mesh.indices.len() % 4 != 0 {
     //                 mesh.indices.push(*mesh.indices.last().unwrap())
@@ -428,7 +476,7 @@ impl<'a> RenderingContext<'a>  {
     //             (info, mesh)
     //         })
     //         .scan((0, 0), |(vert_end_offset, index_end_offset), (info, mut mesh)| {
-                
+
     //             let vertex_count = mesh.vertices.len();
     //             let index_count = mesh.indices.len();
 
@@ -440,10 +488,10 @@ impl<'a> RenderingContext<'a>  {
     //             //Compute the starting offset for current mesh
     //             let vert_start_offset = *vert_end_offset - std::mem::size_of::<u8>() * vertex_count;
     //             let index_start_offset = *index_end_offset - std::mem::size_of::<u16>() * index_count;
-    
+
     //             full_vert_data.append(&mut mesh.vertices);
     //             full_index_data.append(&mut mesh.indices);
-                
+
     //             Some((
     //                 *vert_end_offset,
     //                 *index_end_offset,
@@ -454,11 +502,11 @@ impl<'a> RenderingContext<'a>  {
     //             ))
     //         })
     //         .map(|(
-    //             vert_end_offset, 
-    //             index_end_offset, 
+    //             vert_end_offset,
+    //             index_end_offset,
     //             vert_start_offset,
     //             index_start_offset,
-    //             batch_info, 
+    //             batch_info,
     //             index_count,
     //         )| {
     //             let pipeline_binding_ids = batch_info.distinct_uniform_ids
@@ -473,16 +521,16 @@ impl<'a> RenderingContext<'a>  {
     //                         .1
     //                 )
     //                 .collect::<Vec<_>>();
-                
+
     //             let pipeline_info = RenderPipelineInfo {
     //                 vertex_layout: batch_info.layout,
     //                 shader: batch_info.shader,
     //                 textures: batch_info.textures.clone(),
     //                 uniform_binding_ids: pipeline_binding_ids,
     //             };
-                
-    //             self.create_pipeline_if_doesnt_exist(&pipeline_info);                
-                
+
+    //             self.create_pipeline_if_doesnt_exist(&pipeline_info);
+
     //             DrawCallData {
     //                 pipeline_info,
     //                 textures: batch_info.textures,
@@ -494,17 +542,16 @@ impl<'a> RenderingContext<'a>  {
     //         }).collect::<Vec<_>>();
 
     //     self.queue.write_buffer(
-    //         &self.vertex_buffer, 
+    //         &self.vertex_buffer,
     //         0,
     //         bytemuck::cast_slice(&full_vert_data)
     //     );
 
     //     self.queue.write_buffer(
-    //         &self.index_buffer, 
+    //         &self.index_buffer,
     //         0,
     //         bytemuck::cast_slice(&full_index_data)
     //     );
-
 
     //     let mut encoder = self.device
     //         .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -513,7 +560,7 @@ impl<'a> RenderingContext<'a>  {
 
     //     let output = self.surface.get_current_texture()?;
     //     let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        
+
     //     let output_tex = match output_texture {
     //         Some(id) => &self.textures.get(id).expect("Texture does not exist").texture_view,
     //         None => &output_view,
@@ -545,34 +592,32 @@ impl<'a> RenderingContext<'a>  {
     //         }),
     //     });
 
-        
     //     for draw_call in draw_calls.into_iter() {
 
     //         let (v_start, v_end) = draw_call.vertex_offsets;
     //         let (i_start, i_end) = draw_call.index_offsets;
 
-    //         if v_start == v_end || i_start == i_end { continue } 
-            
-            
+    //         if v_start == v_end || i_start == i_end { continue }
+
     //         let pipeline = self.render_pipelines.get(&draw_call.pipeline_info).unwrap();
-    
+
     //         render_pass.set_pipeline(pipeline);
-    
+
     //         let mut bind_group_idx = 0;
-            
+
     //         //Rework this
     //         for uniform_binding_id in draw_call.uniform_binding_ids.iter() {
     //             let assigned_binding = self.uniform_bindings.get(*uniform_binding_id).unwrap();
     //             render_pass.set_bind_group(bind_group_idx, &assigned_binding.bind_group, &[]);
     //             bind_group_idx += 1;
     //         }
-    
+
     //         for texture_index in draw_call.textures.iter() {
     //             let texture = self.textures.get(*texture_index).unwrap();
     //             render_pass.set_bind_group(bind_group_idx, &texture.bind_group, &[]);
     //             bind_group_idx += 1;
     //         }
-    
+
     //         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(v_start..v_end));
     //         render_pass.set_index_buffer(self.index_buffer.slice(i_start..i_end), wgpu::IndexFormat::Uint16);
     //         render_pass.draw_indexed(0..draw_call.index_count, 0, 0..1);
@@ -581,12 +626,11 @@ impl<'a> RenderingContext<'a>  {
     //     drop(render_pass);
 
     //     self.queue.submit(std::iter::once(encoder.finish()));
-        
+
     //     match output_texture {
     //         Some(_) => {}
     //         None => output.present(),
     //     };
-
 
     //     Ok(())
     // }
@@ -601,7 +645,13 @@ impl<'a> RenderingContext<'a>  {
             .iter()
             .cloned()
             .enumerate()
-            .map(|(original_idx, Uniform { data, dynamic, .. })| (original_idx, (std::mem::size_of::<u8>() * data.len()) as u64, dynamic))
+            .map(|(original_idx, Uniform { data, dynamic, .. })| {
+                (
+                    original_idx,
+                    (std::mem::size_of::<u8>() * data.len()) as u64,
+                    dynamic,
+                )
+            })
             .collect::<Vec<_>>();
         //Sort from highest to lowest size in order to take up bindings with big buffers first
 
@@ -609,22 +659,35 @@ impl<'a> RenderingContext<'a>  {
         //of unneccessary big buffers
         uniform_sizes.sort_by(|(_, a, _), (_, b, _)| b.cmp(a));
 
-        'outer: for (uniform_idx, (original_idx, uniform_size, dynamic)) in uniform_sizes.into_iter().enumerate() {
+        'outer: for (sorted_idx, (original_idx, uniform_size, dynamic)) in
+            uniform_sizes.into_iter().enumerate()
+        {
             for binding_idx in 0..self.uniform_bindings.len() {
                 //If the binding's buffer can accommodate the given uniform
                 //and it hasnt been chosen already
                 let binding = self.uniform_bindings.get(binding_idx).unwrap();
 
                 //if the uniform is dynamic
+                // println!(
+                //     "{:?} ----- {:?}",
+                //     dynamic,
+                //     &uniforms[original_idx].data.len()
+                // );
                 if let Some(DynamicInfo { min_size, max_size }) = dynamic {
                     // only pick dynamic buffers
-                    if binding.min_size <= *min_size && binding.max_size >= *max_size && !chosen_bindings.contains(&(original_idx, binding_idx)) {
+                    if binding.min_size <= *min_size
+                        && binding.max_size >= *max_size
+                        && !chosen_bindings.contains(&(original_idx, binding_idx))
+                    {
                         chosen_bindings.push((original_idx, binding_idx));
                         continue 'outer;
                     }
                 } else {
                     // if the uniform is not dynamic then dont pick dynamic buffers
-                    if binding.min_size <= uniform_size && binding.max_size >= uniform_size && !chosen_bindings.contains(&(original_idx, binding_idx)) {
+                    if binding.min_size <= uniform_size
+                        && binding.max_size >= uniform_size
+                        && !chosen_bindings.contains(&(original_idx, binding_idx))
+                    {
                         chosen_bindings.push((original_idx, binding_idx));
                         continue 'outer;
                     }
@@ -632,11 +695,8 @@ impl<'a> RenderingContext<'a>  {
             }
 
             //If there was no appropriate binding available then create a new one
-            let new_binding = UniformBindGroup::new(
-                &self.device, 
-                &self.queue,
-                &uniforms[uniform_idx]
-            );
+            let new_binding =
+                UniformBindGroup::new(&self.device, &self.queue, &uniforms[original_idx]);
             self.uniform_bindings.push(new_binding);
             //and add it to the chosen list
             chosen_bindings.push((original_idx, self.uniform_bindings.len() - 1));
@@ -654,9 +714,9 @@ impl<'a> RenderingContext<'a>  {
 
     pub fn create_shader_module_if_doesnt_exist(&mut self, shader_contents: &str) {
         let shader_location = shader_contents as *const _;
-        
+
         if self.shader_modules.contains_key(&shader_location) {
-            return
+            return;
         }
 
         let module = self
@@ -668,7 +728,6 @@ impl<'a> RenderingContext<'a>  {
 
         self.shader_modules.insert(shader_location, module);
         crate::debug!("Created new shader module");
-
     }
 
     pub fn create_pipeline_if_doesnt_exist(&mut self, pipeline_info: &RenderPipelineInfo) {
@@ -676,10 +735,11 @@ impl<'a> RenderingContext<'a>  {
             return;
         }
 
-        let uniform_layouts = pipeline_info
-            .uniform_binding_ids
-            .iter()
-            .map(|idx| &self.uniform_bindings.get(*idx).unwrap().bind_group_layout);
+        let uniform_layouts = pipeline_info.uniform_binding_ids.iter().map(|idx| {
+            let binding = &self.uniform_bindings.get(*idx).unwrap();
+
+            &binding.bind_group_layout
+        });
 
         let texture_layouts = pipeline_info
             .textures
@@ -718,11 +778,13 @@ impl<'a> RenderingContext<'a>  {
                 label: None,
                 layout: Some(&rp_layout),
                 vertex: wgpu::VertexState {
+                    compilation_options: PipelineCompilationOptions::default(),
                     module: vert_module,
                     entry_point: &pipeline_info.shader.vert_entry,
                     buffers: &[pipeline_info.vertex_layout.descriptor()],
                 },
                 fragment: Some(wgpu::FragmentState {
+                    compilation_options: PipelineCompilationOptions::default(),
                     module: frag_module,
                     entry_point: &pipeline_info.shader.frag_entry,
                     targets: &[Some(wgpu::ColorTargetState {
@@ -753,10 +815,10 @@ impl<'a> RenderingContext<'a>  {
                         depth_write_enabled: true,
                         depth_compare: wgpu::CompareFunction::Less,
                         stencil: wgpu::StencilState::default(),
-                        bias: wgpu::DepthBiasState::default()
+                        bias: wgpu::DepthBiasState::default(),
                     }),
                     false => None,
-                },  
+                },
                 multisample: wgpu::MultisampleState {
                     count: 1,
                     mask: !0,
@@ -765,8 +827,9 @@ impl<'a> RenderingContext<'a>  {
                 multiview: None,
             });
 
-        self.render_pipelines.insert(pipeline_info.clone(), pipeline);
-        crate::debug!("Created new pipeline");  
+        self.render_pipelines
+            .insert(pipeline_info.clone(), pipeline);
+        crate::debug!("Created new pipeline");
     }
 
     pub fn load_shader(
@@ -779,7 +842,7 @@ impl<'a> RenderingContext<'a>  {
         self.create_shader_module_if_doesnt_exist(vertex_shader);
         self.create_shader_module_if_doesnt_exist(fragment_shader);
 
-         Shader::new(
+        Shader::new(
             vertex_shader,
             vertex_entry.to_owned(),
             fragment_shader,
@@ -787,14 +850,22 @@ impl<'a> RenderingContext<'a>  {
         )
     }
 
-    pub fn create_texture(&mut self, data: &[u8], dimensions: (u32, u32)) -> TextureHandle {
+    pub fn create_texture(
+        &mut self,
+        data: &[u8],
+        dimensions: (u32, u32),
+        sampler_type: wgpu::FilterMode,
+    ) -> TextureHandle {
         let texture = Texture::new(
             &self.device,
             &self.queue,
             data,
             dimensions,
             wgpu::TextureFormat::Rgba8UnormSrgb,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
+            sampler_type,
         );
 
         self.textures.push(texture);
@@ -803,14 +874,30 @@ impl<'a> RenderingContext<'a>  {
         index
     }
 
+    pub fn try_resize_tex(
+        &mut self,
+        tex_handle: TextureHandle,
+        new_size: (u32, u32),
+    ) -> Result<(), ()> {
+        let tex = self.textures.get_mut(tex_handle).ok_or(())?;
+        tex.resize(&self.device, new_size);
+
+        Ok(())
+    }
+
     pub fn create_display_texture(&mut self) -> TextureHandle {
         let texture = Texture::new(
             &self.device,
             &self.queue,
-            &(0..self.config.width * self.config.height * 4).map(|_| 0).collect::<Vec<_>>(),
-            (self.config.width, self.config.height), 
+            &(0..self.config.width * self.config.height * 4)
+                .map(|_| 0)
+                .collect::<Vec<_>>(),
+            (self.config.width, self.config.height),
             self.swapchain_format,
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT 
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            wgpu::FilterMode::Linear,
         );
 
         self.textures.push(texture);
@@ -820,12 +907,13 @@ impl<'a> RenderingContext<'a>  {
     }
     pub fn create_depth_texture(&mut self) -> TextureHandle {
         let depth_texture = Texture::new(
-            &self.device, 
-            &self.queue, 
-            &[], 
-            (self.config.width, self.config.height), 
-            wgpu::TextureFormat::Depth32Float, 
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+            &self.device,
+            &self.queue,
+            &[],
+            (self.config.width, self.config.height),
+            wgpu::TextureFormat::Depth32Float,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            wgpu::FilterMode::Linear,
         );
 
         self.textures.push(depth_texture);
@@ -834,12 +922,8 @@ impl<'a> RenderingContext<'a>  {
         index
     }
 
-    pub fn update_texture(
-        &mut self, 
-        texture_handle: TextureHandle, 
-        data: &[u8], 
-    ) {
-        if let Some(texture) = self.textures.get_mut(texture_handle) { 
+    pub fn update_texture(&mut self, texture_handle: TextureHandle, data: &[u8]) {
+        if let Some(texture) = self.textures.get_mut(texture_handle) {
             texture.update(&self.queue, data);
         }
     }
@@ -858,11 +942,11 @@ pub struct RenderPipelineInfo {
 impl PartialEq for RenderPipelineInfo {
     fn eq(&self, other: &Self) -> bool {
         self.vertex_layout == other.vertex_layout
-        && self.shader == other.shader
-        && self.textures.len() == other.textures.len()
-        && self.uniform_binding_ids == other.uniform_binding_ids
-        && self.depth == other.depth
-        && self.output_format == other.output_format
+            && self.shader == other.shader
+            && self.textures.len() == other.textures.len()
+            && self.uniform_binding_ids == other.uniform_binding_ids
+            && self.depth == other.depth
+            && self.output_format == other.output_format
     }
 }
 
@@ -890,10 +974,10 @@ pub struct BatchInfo {
 impl PartialEq for BatchInfo {
     fn eq(&self, other: &Self) -> bool {
         self.layout == other.layout
-        && self.shader == other.shader
-        && self.textures.len() == other.textures.len()
-        && self.distinct_uniform_ids == other.distinct_uniform_ids
-        && self.transparent == other.transparent
+            && self.shader == other.shader
+            && self.textures.len() == other.textures.len()
+            && self.distinct_uniform_ids == other.distinct_uniform_ids
+            && self.transparent == other.transparent
     }
 }
 
@@ -912,7 +996,7 @@ impl BatchInfo {
         mesh: &PackedMesh,
         shader: Shader,
         textures: Vec<TextureHandle>,
-        distinct_uniform_ids: Vec<usize>
+        distinct_uniform_ids: Vec<usize>,
     ) -> Self {
         Self {
             layout: mesh.layout.clone(),

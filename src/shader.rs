@@ -23,7 +23,7 @@ impl Shader {
         frag_path: *const str,
         frag_entry: String,
     ) -> Self {
-        match vert_path.eq(&frag_path) {
+        match std::ptr::addr_eq(vert_path, frag_path) {
             true => Self {
                 modules: ShaderModule::Single { module: vert_path },
                 vert_entry,

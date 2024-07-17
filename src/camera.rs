@@ -1,13 +1,5 @@
-
+use encase::ShaderType;
 use nalgebra_glm as glm;
-
-#[rustfmt::skip]
-pub const OPENGL_TO_WGPU_MATRIX: glm::Mat4 = glm::Mat4::new(
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 0.5, 0.0,
-    0.0, 0.0, 0.5, 1.0,
-);
 
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
@@ -44,21 +36,13 @@ impl OrthoCamera {
     }
 
     pub fn build_proj_matrix(&self, new_window_size: &glm::UVec2) -> glm::Mat4 {
-
         let width = new_window_size.x as f32;
         let height = new_window_size.y as f32;
 
         let scale_x = width / self.zoom;
         let scale_y = height / self.zoom;
 
-        let proj = glm::ortho(
-            -scale_x, 
-            scale_x, 
-            -scale_y, 
-            scale_y, 
-            -self.zfar, 
-            self.zfar
-        );
+        let proj = glm::ortho(-scale_x, scale_x, -scale_y, scale_y, -self.zfar, self.zfar);
 
         proj
     }
@@ -66,7 +50,7 @@ impl OrthoCamera {
     pub fn build_view_proj_matrix(&self, window_size: &glm::UVec2) -> glm::Mat4 {
         let view = self.build_view_matrix();
         let proj = self.build_proj_matrix(window_size);
-        
+
         proj * view
     }
 
@@ -113,19 +97,18 @@ impl PerspectiveCamera {
     }
 
     pub fn build_proj_matrix(&self, window_size: &glm::UVec2) -> glm::Mat4 {
-
         let width = window_size.x as f32;
         let height = window_size.y as f32;
-    
+
         let aspect_ratio = width / height;
-        
+
         glm::perspective(aspect_ratio, self.fov, self.near, self.far)
     }
 
     pub fn build_view_proj_matrix(&self, window_size: &glm::UVec2) -> glm::Mat4 {
         let view = self.build_view_matrix();
         let proj = self.build_proj_matrix(window_size);
-        
+
         proj * view
     }
 
@@ -135,7 +118,7 @@ impl PerspectiveCamera {
         up: glm::Vec3,
         near: f32,
         far: f32,
-        fov: f32
+        fov: f32,
     ) -> Self {
         let uniform = CameraUniform::default();
 
@@ -146,7 +129,7 @@ impl PerspectiveCamera {
             far,
             near,
             uniform,
-            fov
+            fov,
         }
     }
 }

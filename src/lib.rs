@@ -3,15 +3,15 @@ pub mod camera;
 pub mod mesh;
 pub mod renderer;
 pub mod shader;
+pub mod texture;
 pub mod uniform;
 pub mod vertex;
-pub mod texture;
 
 //Reexports
-pub use winit;
-pub use wgpu;
-pub use nalgebra_glm as glm;
 pub use bytemuck;
+pub use nalgebra_glm as glm;
+pub use wgpu;
+pub use winit;
 
 #[allow(unused_macros)]
 macro_rules! debug {

@@ -1,3 +1,4 @@
+use encase::UniformBuffer;
 use wgpu::util::DeviceExt;
 
 pub struct UniformHandle {
@@ -15,8 +16,8 @@ pub struct UniformBindGroup {
 
 impl UniformBindGroup {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, uniform: &Uniform) -> Self {
-
-        let (min_size, max_size) = if let Some(DynamicInfo { min_size, max_size }) = uniform.dynamic {
+        let (min_size, max_size) = if let Some(DynamicInfo { min_size, max_size }) = uniform.dynamic
+        {
             (min_size, max_size)
         } else {
             let content_size = std::mem::size_of_val(uniform.data.as_slice()) as u64;
@@ -37,7 +38,6 @@ impl UniformBindGroup {
             }],
         });
 
-
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             size: max_size,
             label: None,
@@ -46,7 +46,7 @@ impl UniformBindGroup {
         });
 
         queue.write_buffer(&buffer, 0, &uniform.data);
-        
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &bind_group_layout,
@@ -56,7 +56,7 @@ impl UniformBindGroup {
             }],
         });
 
-        Self {  
+        Self {
             bind_group_layout,
             bind_group,
             buffer,
@@ -67,13 +67,13 @@ impl UniformBindGroup {
 
     //this should take &mut self but the borrow checker complains in the render method lol
     pub fn update(&self, queue: &wgpu::Queue, data: &[u8]) {
-        
         // crate::debug!(format!("Uniform update {}B / {}B", data.len(), self.max_size));
+
         queue.write_buffer(&self.buffer, 0, bytemuck::cast_slice(data));
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct DynamicInfo {
     pub min_size: u64,
     pub max_size: u64,

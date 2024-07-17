@@ -12,7 +12,15 @@ pub struct Texture {
 }
 
 impl Texture {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, texture_data: &[u8], dimensions: (u32, u32), format: wgpu::TextureFormat, usage: wgpu::TextureUsages) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        texture_data: &[u8],
+        dimensions: (u32, u32),
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
+        sampler_type: wgpu::FilterMode,
+    ) -> Self {
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[
@@ -29,43 +37,37 @@ impl Texture {
                         multisampled: false,
                         view_dimension: wgpu::TextureViewDimension::D2,
                         sample_type: if format == wgpu::TextureFormat::Depth32Float {
-                           wgpu::TextureSampleType::Depth 
+                            wgpu::TextureSampleType::Depth
                         } else {
                             wgpu::TextureSampleType::Float { filterable: true }
-                        }
+                        },
                     },
                     count: None,
                 },
             ],
         });
-        let texture = device.create_texture(
-            &wgpu::TextureDescriptor {
-                label: None,
-                size: Extent3d {
-                    width: dimensions.0,
-                    height: dimensions.1,
-                    depth_or_array_layers: 1
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,//: wgpu::textureformat::rgba8unormsrgb,
-                usage,//: wgpu::textureusages::texture_binding | wgpu::textureusages::copy_dst
-                view_formats: &[]
-            }
-        );
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format, //: wgpu::textureformat::rgba8unormsrgb,
+            usage,  //: wgpu::textureusages::texture_binding | wgpu::textureusages::copy_dst
+            view_formats: &[],
+        });
 
-        if (usage & wgpu::TextureUsages::COPY_DST == wgpu::TextureUsages::COPY_DST) {
+        if usage & wgpu::TextureUsages::COPY_DST == wgpu::TextureUsages::COPY_DST {
             queue.write_texture(
                 wgpu::ImageCopyTexture {
                     aspect: wgpu::TextureAspect::All,
                     texture: &texture,
                     mip_level: 0,
-                    origin: wgpu::Origin3d {
-                        x: 0,
-                        y: 0,
-                        z: 0
-                    },
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
                 },
                 texture_data,
                 wgpu::ImageDataLayout {
@@ -76,26 +78,23 @@ impl Texture {
                 wgpu::Extent3d {
                     width: dimensions.0,
                     height: dimensions.1,
-                    depth_or_array_layers: 1
-                }
+                    depth_or_array_layers: 1,
+                },
             );
         }
 
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor {
             ..Default::default()
         });
-        let texture_sampler = device.create_sampler(
-            &wgpu::SamplerDescriptor {
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                mipmap_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            }
-        );
-
+        let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: sampler_type,
+            min_filter: sampler_type,
+            mipmap_filter: sampler_type,
+            ..Default::default()
+        });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -108,12 +107,11 @@ impl Texture {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&texture_view),
-                }
+                },
             ],
         });
 
         crate::debug!("Created new texture");
-
 
         Self {
             bind_group_layout,
@@ -123,7 +121,7 @@ impl Texture {
             texture_sampler,
             dimensions,
             format,
-            usage
+            usage,
         }
     }
 
@@ -133,11 +131,7 @@ impl Texture {
                 aspect: wgpu::TextureAspect::All,
                 texture: &self.texture,
                 mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: 0,
-                    y: 0,
-                    z: 0
-                },
+                origin: wgpu::Origin3d { x: 0, y: 0, z: 0 },
             },
             data,
             wgpu::ImageDataLayout {
@@ -148,10 +142,9 @@ impl Texture {
             wgpu::Extent3d {
                 width: self.dimensions.0,
                 height: self.dimensions.1,
-                depth_or_array_layers: 1
-            }
+                depth_or_array_layers: 1,
+            },
         );
-
     }
 
     pub fn destroy(self) {
@@ -159,22 +152,20 @@ impl Texture {
     }
 
     pub fn resize(&mut self, device: &wgpu::Device, dimensions: (u32, u32)) {
-        let texture = device.create_texture(
-            &wgpu::TextureDescriptor {
-                label: None,
-                size: Extent3d {
-                    width: dimensions.0,
-                    height: dimensions.1,
-                    depth_or_array_layers: 1
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: self.format,//: wgpu::textureformat::rgba8unormsrgb,
-                usage: self.usage,//: wgpu::textureusages::texture_binding | wgpu::textureusages::copy_dst
-                view_formats: &[]
-            }
-        );
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.format, //: wgpu::textureformat::rgba8unormsrgb,
+            usage: self.usage, //: wgpu::textureusages::texture_binding | wgpu::textureusages::copy_dst
+            view_formats: &[],
+        });
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
@@ -187,12 +178,12 @@ impl Texture {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&texture_view),
-                }
+                },
             ],
         });
         // NOTE: idk if texture.destroy() has to be called or if it is called automatically
         self.texture_view = texture_view;
-        self.texture = texture;  
+        self.texture = texture;
         self.bind_group = bind_group;
         self.dimensions = dimensions;
     }
