@@ -663,9 +663,14 @@ impl<'a> RenderingContext<'a> {
             uniform_sizes.into_iter().enumerate()
         {
             for binding_idx in 0..self.uniform_bindings.len() {
-                //If the binding's buffer can accommodate the given uniform
-                //and it hasnt been chosen already
                 let binding = self.uniform_bindings.get(binding_idx).unwrap();
+
+                let used = chosen_bindings
+                    .iter()
+                    .any(|(_, b_idx)| binding_idx == *b_idx);
+                if used {
+                    continue;
+                }
 
                 //if the uniform is dynamic
                 // println!(
@@ -673,21 +678,20 @@ impl<'a> RenderingContext<'a> {
                 //     dynamic,
                 //     &uniforms[original_idx].data.len()
                 // );
+                //If the binding's buffer can accommodate the given uniform
+                //and it hasnt been chosen already
                 if let Some(DynamicInfo { min_size, max_size }) = dynamic {
                     // only pick dynamic buffers
-                    if binding.min_size <= *min_size
+                    if binding.min_size != binding.max_size
+                        && binding.min_size <= *min_size
                         && binding.max_size >= *max_size
-                        && !chosen_bindings.contains(&(original_idx, binding_idx))
                     {
                         chosen_bindings.push((original_idx, binding_idx));
                         continue 'outer;
                     }
                 } else {
                     // if the uniform is not dynamic then dont pick dynamic buffers
-                    if binding.min_size <= uniform_size
-                        && binding.max_size >= uniform_size
-                        && !chosen_bindings.contains(&(original_idx, binding_idx))
-                    {
+                    if binding.min_size == binding.max_size && binding.min_size == uniform_size {
                         chosen_bindings.push((original_idx, binding_idx));
                         continue 'outer;
                     }
@@ -697,10 +701,15 @@ impl<'a> RenderingContext<'a> {
             //If there was no appropriate binding available then create a new one
             let new_binding =
                 UniformBindGroup::new(&self.device, &self.queue, &uniforms[original_idx]);
+            crate::debug!(
+                "Created new binding {:?} --- {:?} - {:?}",
+                &uniforms[original_idx].data.len(),
+                new_binding.min_size,
+                new_binding.max_size
+            );
             self.uniform_bindings.push(new_binding);
             //and add it to the chosen list
             chosen_bindings.push((original_idx, self.uniform_bindings.len() - 1));
-            crate::debug!("Created new binding");
         }
 
         chosen_bindings
@@ -737,7 +746,6 @@ impl<'a> RenderingContext<'a> {
 
         let uniform_layouts = pipeline_info.uniform_binding_ids.iter().map(|idx| {
             let binding = &self.uniform_bindings.get(*idx).unwrap();
-
             &binding.bind_group_layout
         });
 
