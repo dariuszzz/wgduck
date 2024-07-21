@@ -181,6 +181,7 @@ impl Texture {
                 },
             ],
         });
+
         // NOTE: idk if texture.destroy() has to be called or if it is called automatically
         self.texture_view = texture_view;
         self.texture = texture;

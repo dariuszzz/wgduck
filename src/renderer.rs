@@ -872,7 +872,9 @@ impl<'a> RenderingContext<'a> {
             wgpu::TextureFormat::Rgba8UnormSrgb,
             wgpu::TextureUsages::TEXTURE_BINDING
                 | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::COPY_SRC,
+                | wgpu::TextureUsages::COPY_SRC
+                // probably should be optional
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             sampler_type,
         );
 
